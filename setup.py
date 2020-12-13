@@ -17,9 +17,13 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url='https://github.com/akloss/differentiable_filters',
     packages=setuptools.find_packages(),
+    entry_points = {
+        'console_scripts': ['run_filter_experiment=differentiable_filters.run_experiment:main',
+			    'create_toy_dataset=differentiable_filters.data.create_toy_dataset:main'],
+    },
     install_requires=['tensorflow-gpu==1.14.0', 'matplotlib', 
                       'numpy==1.16.4', 'tensorflow-probability==0.7.0',
-                      'gast==0.2.2', 'pyaml'],
+                      'gast==0.2.2', 'pyaml', 'opencv-python'],
     python_requires='>=3.6',
 )
 

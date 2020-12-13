@@ -16,14 +16,14 @@ from matplotlib.patches import Ellipse
 import matplotlib.pyplot as plt
 
 
-from differentiable_filters import base_context as base
-from differentiable_filters.base_layer import BaseLayer
-from differentiable_filters import recordio as tfr
+from differentiable_filters.contexts import base_context as base
+from differentiable_filters.contexts.base_layer import BaseLayer
+from differentiable_filters.contexts import recordio as tfr
 
 
 class Context(base.BaseContext):
     def __init__(self, param, mode):
-        base.BaseContext.__init__(self, param)
+        base.BaseContext.__init__(self, param, mode)
         self.debug = param['debug']
         if 'normalize' in param.keys():
             self.normalize = param['normalize']
@@ -1886,11 +1886,10 @@ class ProcessModel(BaseLayer):
                     axis=1)
             else:
                 F = None
-            fc3 = None
         if self.jacobian:
             F = tf.stop_gradient(F)
 
-        return new_state, fc3, F
+        return new_state, F
 
 
 class ProcessNoise(BaseLayer):

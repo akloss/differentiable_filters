@@ -84,7 +84,28 @@ class RunExperiment():
             self.confs = json.load(f)
             f.close()
         else:
-            self.log.error('No config file found at ' + config_path)
+            self.log.warning('No config file found at ' + config_path +
+                             '! Using default settings.')
+            self.log.info('config files should be called \"config.json\" ' +
+                          ' and should be placed in the output directory.')
+
+            self.confs = {
+                "default": {"lr": [1e-4, 1e-5],
+                            "val_epochs": 1,
+                            "checkpoint_epochs": 1,
+                            "batch_size": [16],
+                            "max_epochs": 15},
+                "pretrain_observations": {"lr": [1e-4],
+                                          "val_epochs": 1,
+                                          "checkpoint_epochs": 1,
+                                          "batch_size": [32],
+                                          "max_epochs": 30},
+                "pretrain_process": {"lr": [1e-4],
+                                     "val_epochs": 1,
+                                     "checkpoint_epochs": 1,
+                                     "batch_size": [32],
+                                     "max_epochs": 30}
+                }
 
     def run_experiments(self):
         self.log.info('##########################################')
@@ -126,6 +147,7 @@ class RunExperiment():
         else:
             self.log.info('# Experiment failed')
         self.log.info('##########################################')
+        return
 
     def run_pretrain(self):
         """
@@ -220,9 +242,12 @@ class RunExperiment():
             param['data_name'] = self.param.data_name_train
             param['sequence_length'] = self.param.sequence_length_train
             param['weight_file'] = weight_files
-            if self.param.weight_file is not None:
-                param['weight_file'] = {'observations':
-                                        self.param.weight_file}
+
+            if mode != 'filter':
+                param['add_initial_noise'] = 0
+            # if self.param.weight_file is not None:
+            #     param['weight_file'] = {'observations':
+            #                             self.param.weight_file}
             if not os.path.exists(os.path.join(config_dir, 'DONE')):
                 run = True
                 if os.path.exists(os.path.join(config_dir, 'RUNNING')):
@@ -316,10 +341,7 @@ class RunExperiment():
         # config should have learning rate, decay steps, decay factor
         lrs = config['lr']
         batch_size = config['batch_size']
-        if 'max_epochs' in config.keys():
-            maxs = config['max_epochs']
-        else:
-            maxs = config['max_steps']
+        maxs = config['max_epochs']
         if type(maxs) != list:
             maxs = [maxs]
         params = []
@@ -328,12 +350,8 @@ class RunExperiment():
                 for m in maxs:
                     p = {'learning_rate': lr, 'batch_size': bs,
                          'val_epochs': config['val_epochs'],
-                         'checkpoint_epochs': config['checkpoint_epochs']}
-
-                    if 'max_epochs' in config.keys():
-                        p['max_epochs'] = m
-                    else:
-                        p['max_steps'] = m
+                         'checkpoint_epochs': config['checkpoint_epochs'],
+                         'max_epochs': m}
 
                     params += [p]
 
@@ -384,17 +402,17 @@ class RunExperiment():
             return False, []
 
         # return the best model
-        models = list(map(lambda x: (x[0], x[2]), min_loss_list))[0]
-        self.log.info('Best model:' + str(models[0][0]) +
-                      'step: ' + str(models[0][1]))
+        best = list(map(lambda x: (x[0], x[2]), min_loss_list))[0]
+        self.log.info('Best model:' + str(best[0]) +
+                      ' step: ' + str(best[1]))
 
         if self.remove_bad:
             # delete the files from the others
             for x in min_loss_list:
-                if not x[0] in map(lambda x: x[0], models):
+                if x[0] != best[0]:
                     self.log.debug('delete ' + x[0])
                     shutil.rmtree(x[0])
-        return True, models
+        return True, best
 
     def _evaluate(self, res_dir, model, out_name, mode):
         weight_file = {'full': os.path.join(model[0], 'train',
@@ -413,6 +431,9 @@ class RunExperiment():
         if 'num_samples_test' in args.keys():
             args['num_samples'] = self.param.num_samples_test
 
+        if mode != 'filter':
+            args['add_initial_noise'] = 0
+
         if not os.path.exists(os.path.join(val_dir, 'DONE')) or self.redo:
             self.log.info('###### Evaluate ' + os.path.basename(model[0]))
             all_success = True
@@ -425,10 +446,6 @@ class RunExperiment():
                 if 'resample_rate_test' in args.keys() and \
                         args['resample_rate_test'] is not None:
                     out_dir += '_re' + str(args['resample_rate_test'])
-                if 'initial_covar_test' in args.keys() and \
-                        args['initial_covar_test'] is not None:
-                    out_dir += '_ic' + \
-                        args['initial_covar_test'].replace(' ', '_')
 
                 if not os.path.exists(out_dir):
                     os.mkdir(out_dir)
@@ -464,10 +481,6 @@ class RunExperiment():
                 if 'resample_rate_test' in args.keys() and \
                         args['resample_rate_test'] is not None:
                     out_dir += '_re' + str(args['resample_rate_test'])
-                if 'initial_covar_test' in args.keys() and \
-                        args['initial_covar_test'] is not None:
-                    out_dir += '_ic' + \
-                        args['initial_covar_test'].replace(' ', '_')
 
                 if not os.path.exists(out_dir):
                     os.mkdir(out_dir)
@@ -583,7 +596,7 @@ class RunExperiment():
         log_file.close()
 
 
-def main(argv=None):
+def main():
     parser = argparse.ArgumentParser('run_experiments')
     parser.add_argument('--name', dest='name', type=str,
                         required=True, help='experiment name')
@@ -660,10 +673,10 @@ def main(argv=None):
                         type=int, default=1,
                         help='how often a filter gets observations')
     parser.add_argument('--sequence-length-train',
-                        dest='sequence_length_train', type=int, default=9,
+                        dest='sequence_length_train', type=int, default=10,
                         help='length of the training sequence')
     parser.add_argument('--sequence-length-test', dest='sequence_length_test',
-                        type=int, default=99,
+                        type=int, default=50,
                         help='length of the testing sequence')
     parser.add_argument('--scale', dest='scale', type=float, default=1.,
                         help='factor by which to rescale the state')
@@ -674,6 +687,7 @@ def main(argv=None):
                         choices=[0, 1], default=1,
                         help='learn heteroscedastic process noise?')
     parser.add_argument('--learn-r', dest='learn_r', type=int, choices=[0, 1],
+                        default=1,
                         help='learn the observation noise?')
     parser.add_argument('--hetero-r', dest='hetero_r', type=int,
                         choices=[0, 1], default=1,
@@ -683,7 +697,7 @@ def main(argv=None):
                         help='learn diagonal noise covariance matrices?')
 
     parser.add_argument('--add-initial-noise', dest='add_initial_noise',
-                        type=int, choices=[0, 1], default=0,
+                        type=int, choices=[0, 1], default=1,
                         help='add noise to the initial state estimate?')
     parser.add_argument('--initial-covar', dest='initial_covar', type=str,
                         default=None,
@@ -709,7 +723,7 @@ def main(argv=None):
                         type=int, choices=[0, 1], default=1,
                         help='train the process model?')
     parser.add_argument('--use-pretrained-covar', dest='use_pretrained_covar',
-                        type=int, choices=[0, 1], default=1,
+                        type=int, choices=[0, 1], default=0,
                         help='use the pretrained noise covariances?')
     parser.add_argument('--train-q', dest='train_q',
                         type=int, choices=[0, 1], default=1,
@@ -757,10 +771,11 @@ def main(argv=None):
     parser.add_argument('--num-units', dest='num_units', type=int, default=512,
                         help='number of units in an lstm model')
     parser.add_argument('--lstm-structure', dest='lstm_structure', type=str,
-                        default='none', choices=['lstm', 'lstm1'],
-                        help='structure of the encoder for the lstm')
+                        default='none', choices=['lstm2', 'lstm1'],
+                        help='structure of the lstm: choos lstm1 for one ' +
+                        'layer of lstm cells and lstm2 for two layers')
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
     runner = RunExperiment(args)
     runner.run_experiments()
 

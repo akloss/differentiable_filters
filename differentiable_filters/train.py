@@ -33,7 +33,7 @@ class TrainNet():
         Parameters
         ----------
         param : dict
-            ollection of arguments
+            collection of arguments
         logger : logging.logger
             A logger object that handles output during training
 
@@ -183,14 +183,14 @@ class TrainNet():
                 if mode == 'filter':
                     self.net = filtering.Filter(self.param, self.context)
                 elif mode == 'pretrain_obs':
-                    self.net = filtering.Filter(self.param, self.context)
+                    self.net = filtering.PretrainObservations(self.param,
+                                                              self.context)
                 elif mode == 'pretrain_process':
-                    self.net = filtering.Filter(self.param, self.context)
+                    self.net = filtering.PretrainProcess(self.param,
+                                                         self.context)
                 else:
                     self.log.error('unknown training mode ' + mode)
                     return False
-
-                self.net = filtering.Network(self.param, mode)
             except Exception as ex:
                 self.log.exception(ex)
                 return False

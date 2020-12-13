@@ -19,15 +19,15 @@ import matplotlib.pyplot as plt
 import pickle
 
 
-from differentiable_filters import base_context as base
-from differentiable_filters.base_layer import BaseLayer
-from differentiable_filters import recordio as tfr
-from differentiable_filters import push_utils as utils
+from differentiable_filters.contexts import base_context as base
+from differentiable_filters.contexts.base_layer import BaseLayer
+from differentiable_filters.contexts import recordio as tfr
+from differentiable_filters.contexts import push_utils as utils
 
 
 class Context(base.BaseContext):
     def __init__(self, param, mode):
-        base.BaseContext.__init__(self, param)
+        base.BaseContext.__init__(self, param, mode)
 
         if 'normalize' in param.keys():
             self.normalize = param['normalize']
@@ -49,7 +49,8 @@ class Context(base.BaseContext):
 
         # load the points on the outline of the butter object for visualization
         path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        with open(os.path.join(path, 'butter_points.pkl'), 'rb') as bf:
+        with open(os.path.join(path, 'resources',
+                               'butter_points.pkl'), 'rb') as bf:
             butter_points = pickle.load(bf)
         self.butter_points = np.array(butter_points)
 
@@ -299,15 +300,15 @@ class Context(base.BaseContext):
         the jacobian
         """
         if learned:
-            new_state, last_layer, F = \
+            new_state, F = \
                 self.process_model_learned_layer([old_state, action, self.ob],
                                                  training)
         else:
-            new_state, last_layer, F = \
+            new_state, F = \
                 self.process_model_analytical_layer([old_state, action,
                                                      self.ob], training)
         new_state = self.correct_state(new_state, diff=False)
-        return new_state, last_layer, F
+        return new_state, F
 
     def get_initial_glimpse(self, image, training):
         """
@@ -1342,7 +1343,7 @@ class Context(base.BaseContext):
             # # sanity check
             # # load a plane image for reprojecting
             # path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            # path = os.path.join(path, 'plane_image_smaller.npy')
+            # path = os.path.join(path, 'resources', 'plane_image.npy')
             # print('loading plane image from: ', path)
 
             # plane_depth = tf.convert_to_tensor(np.load(path))[none, :, :, none]
@@ -2528,7 +2529,7 @@ class SegmentationLayer(BaseLayer):
 
         # load a plane image for reprojecting
         path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        path = os.path.join(path, 'plane_image_smaller.npy')
+        path = os.path.join(path, 'resources', 'plane_image.npy')
 
         self.plane_depth = \
             tf.convert_to_tensor(np.load(path))[None, :, :, None]
@@ -2649,8 +2650,7 @@ class SegmentationLayer(BaseLayer):
                     tf.summary.image('mask', mask_out[0:1])
 
             # predict the object position
-            pos_pix = self._spatial_softmax(mask, 'pos', scale=1.,
-                                            method='softmax',
+            pos_pix = self._spatial_softmax(mask, 'pos', method='softmax',
                                             summary=self.summary)
             pos_pix = tf.reshape(pos_pix, [self.batch_size, 2])
             pos = utils._to_3d(pos_pix, self.plane_depth)
@@ -2677,7 +2677,7 @@ class SensorLayer(BaseLayer):
 
         # load a plane image for reprojecting
         path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        path = os.path.join(path, 'plane_image_smaller.npy')
+        path = os.path.join(path, 'resources', 'plane_image.npy')
 
         self.plane_depth = \
             tf.convert_to_tensor(np.load(path))[None, :, :, None]
@@ -3111,7 +3111,7 @@ class Likelihood(BaseLayer):
         self.like_pos_fc = self._fc_layer('like_pos_fc', 2*self.dim_z,
                                           trainable=self.trainable)
         # rotation, normal, contact point and contact
-        self.like_rot_fc = self._fc_layer('like_rot_fc', 1, self.dim_z,
+        self.like_rot_fc = self._fc_layer('like_rot_fc', self.dim_z,
                                           trainable=self.trainable)
         self.like_rns_fc1 = self._fc_layer('like_rns_fc1', 128,
                                            trainable=self.trainable)
@@ -3416,11 +3416,9 @@ class ProcessModel(BaseLayer):
                               axis=1) / self.scale
                 F = None
 
-            fc3 = None
-
         if self.jacobian:
             F = tf.stop_gradient(F)
-        return new_state, fc3, F
+        return new_state, F
 
 
 class ProcessNoise(BaseLayer):

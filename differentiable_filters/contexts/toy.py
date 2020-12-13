@@ -16,14 +16,14 @@ import csv
 from matplotlib.patches import Ellipse
 import matplotlib.pyplot as plt
 
-from differentiable_filters import base_context as base
-from differentiable_filters.base_layer import BaseLayer
-from differentiable_filters import recordio as tfr
+from differentiable_filters.contexts import base_context as base
+from differentiable_filters.contexts.base_layer import BaseLayer
+from differentiable_filters.contexts import recordio as tfr
 
 
 class Context(base.BaseContext):
     def __init__(self, param, mode):
-        base.BaseContext.__init__(self, param)
+        base.BaseContext.__init__(self, param, mode)
 
         # the state size
         self.dim_x = 4
@@ -38,12 +38,6 @@ class Context(base.BaseContext):
 
         self.scale = param['scale']
         self.sl = param['sequence_length']
-
-        self.process_update = param['process_update']
-
-        # dataset statistics
-        self.mean = tf.zeros([self.batch_size, self.dim_x], dtype=tf.float32)
-        self.std = tf.ones([self.batch_size, self.dim_x], dtype=tf.float32)
 
         # define initial values for the process noise q and observation noise r
         # diagonals
@@ -87,14 +81,22 @@ class Context(base.BaseContext):
                  np.array([-17.30, 9.05, 3.23, 9.94]).astype(np.float32),
                  np.array([3.1, 1.197, -17.166, -1.94]).astype(np.float32),
                  np.array([-12.76, 26.25, -1.98, -1.87]).astype(np.float32)]
-        else:
-            # initial covariance [5. 5. 5. 5.]
+        elif self.initial_covariance == [5.0, 5.0, 5.0, 5.0]:
             self.noise_list = \
                 [np.array([0., 0., 0., 0.]).astype(np.float32),
                  np.array([-5.587, 3.782, -5.895, -3.441]).astype(np.float32),
                  np.array([-10.428, 1.034, 9.516, -1.171]).astype(np.float32),
                  np.array([3.053, 4.262, -6.058, 4.927]).astype(np.float32),
                  np.array([2.631, 12.652, 7.648, 5.688]).astype(np.float32)]
+        else:
+            # initial covariance [1. 1. 1. 1.]
+            self.noise_list = \
+                [np.array([0., 0., 0., 0.]).astype(np.float32),
+                 np.array([-5.587, 3.782, -5.895, -3.441]).astype(np.float32),
+                 np.array([-10.428, 1.034, 9.516, -1.171]).astype(np.float32),
+                 np.array([3.053, 4.262, -6.058, 4.927]).astype(np.float32),
+                 np.array([2.631, 12.652, 7.648, 5.688]).astype(np.float32)]
+            self.noise_list = list(map(lambda x: x/5., self.noise_list))
 
         if mode == 'filter':
             train_sensor_model = param['train_sensor_model']
@@ -168,8 +170,7 @@ class Context(base.BaseContext):
                 self.observation_noise_const_full
         if param['learned_likelihood'] and mode == 'filter' or \
                 mode == 'pretrain_obs':
-            self.likelihood_layer = Likelihood(self.dim_z, self.mean,
-                                               self.std, trainable=train_r,
+            self.likelihood_layer = Likelihood(self.dim_z, trainable=train_r,
                                                summary=summary)
             self.observation_noise_models['like'] = self.likelihood_layer
 
@@ -183,7 +184,7 @@ class Context(base.BaseContext):
             self.process_model_learned_layer = \
                 ProcessModel(self.batch_size, self.dim_x, self.dim_u,
                              self.spring_force, self.drag_force,
-                             scale=self.scale, update=self.process_update,
+                             scale=self.scale,
                              learned=True, jacobian=param['filter'] == 'ekf',
                              trainable=train_process_model, summary=summary)
             self.process_models['learned'] = self.process_model_learned_layer
@@ -192,7 +193,7 @@ class Context(base.BaseContext):
             self.process_model_analytical_layer = \
                 ProcessModel(self.batch_size, self.dim_x, self.dim_u,
                              self.spring_force, self.drag_force,
-                             scale=self.scale, update=self.process_update,
+                             scale=self.scale,
                              learned=False, jacobian=param['filter'] == 'ekf',
                              trainable=train_process_model, summary=summary)
             self.process_models['ana'] = self.process_model_analytical_layer
@@ -449,23 +450,16 @@ class Context(base.BaseContext):
         vis_label = tf.cast(vis_label, tf.float32)[:, None]
         diff = label - z
 
-        likelihood_const_diag, det_const_diag, err_const_diag = \
-            self._likelihood_d(diff, R_const_diag, reduce_mean=False)
-        likelihood_const_tri, det_const_tri, err_const_tri = \
-            self._likelihood_d(diff, R_const_tri, reduce_mean=False)
-        likelihood_het_diag, det_het_diag, err_het_diag = \
-            self._likelihood_d(diff, R_het_diag, reduce_mean=False)
-        likelihood_het_tri, det_het_tri, err_het_tri = \
-            self._likelihood_d(diff, R_het_tri, reduce_mean=False)
+        likelihood_const_diag = \
+            self._likelihood(diff, R_const_diag, reduce_mean=False)
+        likelihood_const_tri = \
+            self._likelihood(diff, R_const_tri, reduce_mean=False)
+        likelihood_het_diag = \
+            self._likelihood(diff, R_het_diag, reduce_mean=False)
+        likelihood_het_tri = \
+            self._likelihood(diff, R_het_tri, reduce_mean=False)
 
         _, dist = self._mse(diff, reduce_mean=False)
-
-        for i in range(min(self.batch_size, 3)):
-            tf.summary.scalar('debug/diff_' + str(i), tf.squeeze(dist[i]))
-            tf.summary.scalar('debug/det_het_diag_' + str(i),
-                              tf.squeeze(det_het_diag[i]))
-            tf.summary.scalar('debug/err_het_diag_' + str(i),
-                              tf.squeeze(err_het_diag[i]))
 
         likelihood = (likelihood_const_diag + likelihood_const_tri +
                       likelihood_het_diag + likelihood_het_tri) / 4.
@@ -955,6 +949,14 @@ class Context(base.BaseContext):
             actions = tf.concat([state[0:1, 2:] - start[None, 2:], actions],
                                 axis=0)
 
+            length = im.get_shape()[0].value
+
+            if self.sl > length:
+                raise ValueError('Desired training sequence length is ' +
+                                 'longer than dataset sequence length: ' +
+                                 'Desired: ' + str(self.sl) + ', data: ' +
+                                 str(length))
+
             if self.sl == 50:
                 start_inds = [0]
             else:
@@ -963,7 +965,7 @@ class Context(base.BaseContext):
                 # lengths (maximum length is 50)
                 num = 50 // self.sl
                 start_inds = \
-                    np.random.randint(0, im.get_shape()[0].value-self.sl-1,
+                    np.random.randint(0, length-self.sl-1,
                                       num)
                 self.train_multiplier = num
 
@@ -1016,6 +1018,14 @@ class Context(base.BaseContext):
             actions = tf.concat([state[0:1, 2:] - start[None, 2:],
                                  actions], axis=0)
 
+            length = im.get_shape()[0].value
+
+            if self.sl > length:
+                raise ValueError('Desired training sequence length is ' +
+                                 'longer than dataset sequence length: ' +
+                                 'Desired: ' + str(self.sl) + ', data: ' +
+                                 str(length))
+
             if self.sl == 50:
                 start_inds = [-1]
             else:
@@ -1025,8 +1035,7 @@ class Context(base.BaseContext):
                 num = 50 // self.sl
                 # we use several sub-sequences of the testsequence
                 start_inds = \
-                    np.arange(0, im.get_shape()[0].value-self.sl-1,
-                              (self.sl+1)//2)
+                    np.arange(0, length-self.sl-1, (self.sl+1)//2)
                 start_inds = start_inds[:num]
 
             # prepare the lists of output tensors
@@ -1087,6 +1096,15 @@ class Context(base.BaseContext):
             # state = tf.concat([start[None, :], state], axis=0)
             # im = tf.concat([features['start_image'][None, :, :, :], im],
             #                axis=0)
+
+            length = im.get_shape()[0].value
+
+            if self.sl > length:
+                raise ValueError('Desired testing sequence length is ' +
+                                 'longer than dataset sequence length: ' +
+                                 'Desired: ' + str(self.sl) + ', data: ' +
+                                 str(length))
+
             if self.sl > features['state'].get_shape()[0].value//2:
                 states = [state[:self.sl]]
                 starts = [start]
@@ -1515,7 +1533,6 @@ class Context(base.BaseContext):
                     bbox_inches="tight")
 
 
-
 class SensorModel(BaseLayer):
     def __init__(self, batch_size, summary, trainable):
         super(SensorModel, self).__init__()
@@ -1670,13 +1687,10 @@ class ObservationNoise(BaseLayer):
 
 
 class Likelihood(BaseLayer):
-    def __init__(self, dim_z, mean, std, trainable, summary):
+    def __init__(self, dim_z, trainable, summary):
         super(Likelihood, self).__init__()
         self.summary = summary
         self.dim_z = dim_z
-
-        self.mean = mean
-        self.std = std
 
         self.fc1 = self._fc_layer('fc1', 128, trainable=trainable)
         self.fc2 = self._fc_layer('fc2', 128, trainable=trainable)
@@ -1690,7 +1704,7 @@ class Likelihood(BaseLayer):
         num_pred = particles.get_shape()[1].value
 
         # tile the encoding
-        encoding = tf.tile(encoding[:, None, :], [1,  num_pred, 1])
+        encoding = tf.tile(encoding[:, None, :], [1, num_pred, 1])
         input_data = tf.concat([encoding, particles], axis=-1)
         input_data = tf.reshape(input_data, [bs * num_pred, -1])
 
@@ -1729,7 +1743,7 @@ class ObservationModel(BaseLayer):
 
 
 class ProcessModel(BaseLayer):
-    def __init__(self, batch_size, dim_x, dim_u, sf, df, scale, update,
+    def __init__(self, batch_size, dim_x, dim_u, sf, df, scale,
                  learned, jacobian, trainable, summary):
         super(ProcessModel, self).__init__()
         self.summary = summary
@@ -1740,7 +1754,6 @@ class ProcessModel(BaseLayer):
         self.spring_force = sf
         self.drag_force = df
         self.trainable = trainable
-        self.update = update
         self.jacobian = jacobian
         self.scale = scale
 
@@ -1769,10 +1782,7 @@ class ProcessModel(BaseLayer):
             if self.summary:
                 tf.summary.histogram('update_out', update)
 
-            if self.update:
-                new_state = last_state + update
-            else:
-                new_state = 3 * last_state + update
+            new_state = last_state + update
             if self.jacobian:
                 F = self._compute_jacobian(new_state, last_state)
             else:
@@ -1807,19 +1817,12 @@ class ProcessModel(BaseLayer):
                      tf.concat([dvxdx, zero, dvx, zero], axis=1)[:, None, :],
                      tf.concat([zero, dvydy, zero, dvy], axis=1)[:, None, :]],
                     axis=1)
-
-                # F2 = self._compute_jacobian(new_state, last_state)
-                # ass = tf.debugging.assert_near(F, F2)
             else:
                 F = None
             fc3 = None
         if self.jacobian:
-            # F = tf.Print(F, [last_state], summarize=1000, message='x \n')
-            # F = tf.Print(F, [F], summarize=1000, message='F ana\n')
-            # F = tf.Print(F, [F2], summarize=1000, message='F tf\n')
-            # with tf.control_dependencies([ass]):
             F = tf.stop_gradient(F)
-        return new_state, fc3, F
+        return new_state, F
 
 
 class ProcessNoise(BaseLayer):

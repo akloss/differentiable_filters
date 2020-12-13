@@ -189,19 +189,6 @@ class BaseContext(tf.keras.Model):
         """
         return self.observation_model_layer(state, training)
 
-    # def initial_from_observed(self, base_state, init_z, base_covar, init_R):
-    #     """
-    #     Constructs an initial state with covariance given the ground truth
-    #     state, observations, the initial uncertainty and the uncertainty of
-    #     the initial observations
-
-    #     Returns:
-    #         - the observed initial state where possible and the ground truth
-    #           state else
-    #         - the corresponding uncertainty
-    #     """
-    #     raise NotImplementedError("Please implement this method")
-
     ###########################################################################
     # process models
     ###########################################################################

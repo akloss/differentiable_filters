@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 19 11:38:26 2018
@@ -15,7 +15,7 @@ import logging
 import sys
 from PIL import Image
 
-import differentiable_filtering.recordio as tfr
+import differentiable_filters.contexts.recordio as tfr
 
 
 class KittiDataset():
@@ -358,14 +358,13 @@ class KittiDataset():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser('kitti')
+    parser = argparse.ArgumentParser('kitti dataset')
     parser.add_argument('--name', dest='name', type=str, default='kitti')
-    parser.add_argument('--out-dir', dest='out_dir', type=str,
-                        default='/Volumes/private/akloss/data/filtering_kitti',
+    parser.add_argument('--out-dir', dest='out_dir', type=str, required=True,
                         help='where to store results')
     parser.add_argument('--source-dir', dest='source_dir', type=str,
-                        default='/Volumes/private/akloss/data/kitti_raw',
-                        help='where to find input data')
+                        required=True,
+                        help='where to find the raw kitti dataset.')
 
     args = parser.parse_args(argv)
     plt.ioff()
@@ -381,7 +380,7 @@ def main(argv=None):
                                            '_' + str(i) + '.txt')):
             test_file = files[i]
             train_files = files[:i] + files[i+1:]
-            print('set ', i,  ' test file: ', test_file)
+            print('set ', i, ' test file: ', test_file)
             print('train_files: ', train_files)
             c = KittiDataset(args)
             c.create_dataset(train_files,

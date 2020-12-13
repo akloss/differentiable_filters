@@ -76,17 +76,17 @@ class Filter(tf.keras.Model):
         # will be squared when the covariance matrix is constructed
         if param['initial_covar'] is not None:
             cov_string = param['initial_covar']
-            initial_covariance = list(map(lambda x: float(x),
-                                          cov_string.split(' ')))
+            self.initial_covariance = list(map(lambda x: float(x),
+                                               cov_string.split(' ')))
 
-            initial_covariance = \
+            self.initial_covariance = \
                 np.array(self.initial_covariance).astype(np.float32)
         else:
-            initial_covariance = np.ones((self.dim_x), dtype=np.float32)
+            self.initial_covariance = np.ones((self.dim_x), dtype=np.float32)
         # adapt to the scaling
         cs = []
         for k in range(self.dim_x):
-            cs += [initial_covariance[k] / self.scale]
+            cs += [self.initial_covariance[k] / self.scale]
         self.covar_start_raw = tf.stack(cs)
         covar_start = tf.square(self.covar_start_raw)
         covar_start = tf.linalg.tensor_diag(covar_start)
@@ -111,7 +111,7 @@ class Filter(tf.keras.Model):
 
         """
         raw_observations, actions, initial_observations, initial_state,  \
-            info, noise, step = inputs
+            info, step, noise = inputs
 
         if self.param['problem'] == 'pushing':
             # inform the context about the current objects (for dealing
@@ -157,8 +157,7 @@ class Filter(tf.keras.Model):
         # # construct the initial filter state
         # ----------------------------------------------------------------
         if self.param['filter'] == 'lstm' and \
-                self.param['lstm_structure'] in ['lstm', 'lstm1_2',
-                                                 'lstm2_2', 'lstm_dyn']:
+                self.param['lstm_structure'] == 'lstm2':
             init_state = \
                 (tf.zeros([self.batch_size, self.cell.num_units],
                           dtype=tf.float32),
@@ -172,8 +171,7 @@ class Filter(tf.keras.Model):
                  tf.reshape(self.covar_start, [self.batch_size, -1]),
                  tf.zeros([self.batch_size, 1]))
         elif self.param['filter'] == 'lstm' and \
-                self.param['lstm_structure'] in ['lstm1', 'lstm1_1',
-                                                 'lstm2_1', 'lstm1_dyn']:
+                self.param['lstm_structure'] == 'lstm1':
             init_state = \
                 (tf.zeros([self.batch_size, self.cell.num_units],
                           dtype=tf.float32),
@@ -252,9 +250,9 @@ class Filter(tf.keras.Model):
 
             particles = tf.reshape(particles,
                                    [self.batch_size, -1,
-                                    self.cell.particles, self.dim_x])
+                                    self.cell.num_particles, self.dim_x])
             weights = tf.reshape(weights, [self.batch_size, -1,
-                                           self.cell.particles])
+                                           self.cell.num_particles])
 
             # weights are in log scale, to turn them into a distribution,
             # we exponentiate and normalize them == apply the softmax
@@ -432,6 +430,7 @@ class Filter(tf.keras.Model):
             out_dir: where to store results
             step: the training-step that we evaluate (use for naming)
         """
+
         for i in [0, 3, 8]:
             seq_pred = np.squeeze(additional['seq_pred'][i])
             cov_pred = np.squeeze(additional['cov_pred'][i])
@@ -564,6 +563,13 @@ class PretrainObservations(tf.keras.Model):
         self.param = param
         self.context = context
 
+        # shape  related information
+        self.batch_size = param['batch_size']
+        self.sequence_length = param['sequence_length']
+        self.dim_x = self.context.dim_x
+        self.dim_z = self.context.dim_z
+        self.dim_u = self.context.dim_u
+
         # optional scaling factor for the state-space
         self.scale = param['scale']
 
@@ -634,14 +640,14 @@ class PretrainObservations(tf.keras.Model):
 
             diag_r_const_diag = tf.linalg.diag_part(R_const_diag[0])
             diag_r_het_diag = tf.linalg.diag_part(R_het_diag[0])
-            for k in range(self.context.dim_z):
+            for k in range(self.dim_z):
                 tf.summary.histogram('r_const_diag/' + self.context.z_names[k],
                                      diag_r_const_diag[k:k+1]*self.scale**2)
                 tf.summary.histogram('r_het_diag/' + self.context.z_names[k],
                                      diag_r_het_diag[k:k+1]*self.scale**2)
 
-            for k in range(self.context.dim_z):
-                for j in np.arange(k, self.context.dim_z):
+            for k in range(self.dim_z):
+                for j in np.arange(k, self.dim_z):
                     tf.summary.histogram('r_const_tri/' +
                                          self.context.z_names[k] +
                                          '_' + self.context.z_names[j],
@@ -710,6 +716,13 @@ class PretrainProcess(tf.keras.Model):
         self.param = param
         self.context = context
 
+        # shape  related information
+        self.batch_size = param['batch_size']
+        self.sequence_length = param['sequence_length']
+        self.dim_x = self.context.dim_x
+        self.dim_z = self.context.dim_z
+        self.dim_u = self.context.dim_u
+
         # optional scaling factor for the state-space
         self.scale = param['scale']
 
@@ -740,10 +753,10 @@ class PretrainProcess(tf.keras.Model):
                 self.context.ob = info[0]
             else:
                 last_state, actions = inputs
-            next_state, _, _ = \
+            next_state, _ = \
                 self.context.process_model(last_state, actions, True,
                                            training=training)
-            next_state_ana, _, _ = \
+            next_state_ana, _ = \
                 self.context.process_model(last_state, actions, False,
                                            training=training)
 
@@ -783,7 +796,7 @@ class PretrainProcess(tf.keras.Model):
                 tf.linalg.diag_part(Q_const_diag_ana[0])*self.scale**2
             diag_q_het_diag_ana = \
                 tf.linalg.diag_part(Q_het_diag_ana[0])*self.scale**2
-            for k in range(self.context.dim_x):
+            for k in range(self.dim_x):
                 tf.summary.histogram('q_const_diag_lrn/' +
                                      self.context.x_names[k],
                                      diag_q_const_diag[k:k+1])
@@ -797,8 +810,8 @@ class PretrainProcess(tf.keras.Model):
                                      self.context.x_names[k],
                                      diag_q_het_diag_ana[k:k+1])
 
-            for k in range(self.context.dim_x):
-                for j in np.arange(k, self.context.dim_x):
+            for k in range(self.dim_x):
+                for j in np.arange(k, self.dim_x):
                     n = self.context.x_names[k] + '_' + self.context.x_names[j]
                     tf.summary.histogram('q_const_tri_lrn/' + n,
                                          Q_const_tri[0, k, j]*self.scale**2)

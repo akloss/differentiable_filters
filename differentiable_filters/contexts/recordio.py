@@ -18,7 +18,6 @@ except:
     import pickle as pkl
 
 import json
-import sys
 import yaml
 
 import numpy as np
@@ -46,7 +45,7 @@ def load(file_path):
     return load_ext[ext](file_path)
 
 
-def save(file_path, data, check_overwrite=False, check_create=False):
+def save(file_path, data):
     _, ext = os.path.splitext(file_path)
     save_ext = {}
     save_ext['.yml'] = yaml_save
@@ -54,37 +53,37 @@ def save(file_path, data, check_overwrite=False, check_create=False):
     save_ext['.pkl'] = pkl_save
     save_ext['.pickle'] = pkl_save
     save_ext['.json'] = json_save
-    return save_ext[ext](file_path, data, check_overwrite, check_create)
+    return save_ext[ext](file_path, data)
 
 
 def yaml_load(file_path):
     return _load(file_path, lambda x: yaml.load(x, Loader=yaml.FullLoader))
 
 
-def yaml_save(file_path, data, check_overwrite=False, check_create=False):
+def yaml_save(file_path, data):
     def dump(fw, da):
         yaml.dump(da, fw)
-    _save(file_path, data, dump, check_overwrite, check_create)
+    _save(file_path, data, dump)
 
 
 def pkl_load(file_path):
     return _load(file_path, pkl.load)
 
 
-def pkl_save(file_path, data, check_overwrite=False, check_create=False):
+def pkl_save(file_path, data):
     def dump(fw, da):
         pkl.dump(da, fw, pkl.HIGHEST_PROTOCOL)
-    _save(file_path, data, dump, check_overwrite, check_create)
+    _save(file_path, data, dump)
 
 
 def json_load(file_path):
     return _load(file_path, json.load)
 
 
-def json_save(file_path, data, check_overwrite=False, check_create=False):
+def json_save(file_path, data):
     def dump(fw, da):
         json.dump(da, fw, pkl.HIGHEST_PROTOCOL)
-    _save(file_path, data, dump, check_overwrite, check_create)
+    _save(file_path, data, dump)
 
 
 def _load(file_path, loader_fn):

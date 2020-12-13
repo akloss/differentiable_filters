@@ -12,7 +12,7 @@ from __future__ import print_function, unicode_literals
 import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
-from differentiable_filtering import filter_cell_base as base
+from differentiable_filters.filters import filter_cell_base as base
 
 
 class PFCell(base.FilterCellBase):
@@ -39,13 +39,7 @@ class PFCell(base.FilterCellBase):
         self.resample_rate = param['resample_rate']
 
         # proportion of uniform resampling
-        self.alpha_init = float(param['alpha'])
-        self.alpha_min = 0.
         self.alpha = float(param['alpha'])
-        # schedule for decreasing the uniform resampling rate
-        self.alpha_schedule = param['alpha_schedule']
-        if self.alpha_schedule == 1.:
-            self.alpha_min = self.alpha_init
 
         # for sampling noise in the process model (= drawing new particles
         # from the distribution of the next state)
@@ -480,9 +474,8 @@ class PFCell(base.FilterCellBase):
 
         # soft resampling - this maintains a gradient between old and new
         # weights
-        rate = tf.cond(training, lambda: self.alpha,
-                       lambda: tf.cast(self.alpha_min, tf.float32))
-        resample_prob = (1 - rate) * weights + rate/float(self.num_particles)
+        resample_prob = (1 - self.alpha) * weights + \
+            self.alpha/float(self.num_particles)
         new_weights = weights / resample_prob
 
         # systematic resampling: the samples are evenly distributed over the

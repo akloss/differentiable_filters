@@ -21,6 +21,21 @@ from differentiable_filters import filter_network as filtering
 
 class TestNet():
     def __init__(self, param, logger):
+        """
+        This class handles testing for filtering networks
+
+        Parameters
+        ----------
+        param : dict
+            collection of arguments
+        logger : logging.logger
+            A logger object that handles output during training
+
+        Returns
+        -------
+        None.
+
+        """
         self.param = param
         self.batch_size = 1
         self.log = logger
@@ -40,22 +55,19 @@ class TestNet():
         self.log.info("loading data")
         files = os.listdir(self.param['data_dir'])
 
-        if self.param['info_file'] is not None:
-            info_file = open(self.param['info_file'], 'r')
-        else:
-            # see if there is an info file
-            infos = [os.path.join(self.param['data_dir'], f)
-                     for f in files
-                     if f.startswith('info_' + self.param['data_name'] +
-                                     '.txt') and not f.endswith('~')]
+        # see if there is an info file
+        infos = [os.path.join(self.param['data_dir'], f)
+                 for f in files
+                 if f.startswith('info_' + self.param['data_name'] +
+                                 '.txt') and not f.endswith('~')]
 
-            self.log.debug(infos)
-            if len(infos) == 1:
-                info_file = open(infos[0], 'r')
-            else:
-                self.log.error('No info file found for dataset ' +
-                               self.param['data_name'])
-                return False
+        self.log.debug(infos)
+        if len(infos) == 1:
+            info_file = open(infos[0], 'r')
+        else:
+            self.log.error('No info file found for dataset ' +
+                           self.param['data_name'])
+            return False
 
         try:
             info_data = yaml.load(info_file, Loader=yaml.FullLoader)
@@ -140,14 +152,14 @@ class TestNet():
                 if mode == 'filter':
                     self.net = filtering.Filter(self.param, self.context)
                 elif mode == 'pretrain_obs':
-                    self.net = filtering.Filter(self.param, self.context)
+                    self.net = filtering.PretrainObservations(self.param,
+                                                              self.context)
                 elif mode == 'pretrain_process':
-                    self.net = filtering.Filter(self.param, self.context)
+                    self.net = filtering.PretrainProcess(self.param,
+                                                         self.context)
                 else:
                     self.log.error('unknown training mode ' + mode)
                     return False
-
-                self.net = filtering.Network(self.param, mode)
             except Exception as ex:
                 self.log.exception(ex)
                 return False
@@ -499,7 +511,7 @@ class TestNet():
                     self.log.info('Log saved')
                     self.net.evaluate(log_dict, add_dict,
                                       self.param['out_dir'],
-                                      self.param['step'], mode)
+                                      self.param['step'])
                     self.log.info('Evaluation done.')
         sess.close()
 
@@ -509,10 +521,26 @@ class TestNet():
         return True, log_dict
 
     def restore_weights(self, sess):
+        """
+        Load the weights of the model from a checkpoint
+
+        Parameters
+        ----------
+        sess : tf.Session
+            the current session
+
+        Returns
+        -------
+        success : bool
+            if the checkpoitn restoration was successful
+        re_steps : list of int
+            trainign step(s) at which the restored checkpoints were created
+
+        """
         wf = self.param['weight_file']['full']
         try:
             # print(tf.train.list_variables(wf))
-            stat = self.checkpoint_full.restore(wf)
+            stat = self.checkpoint_full.restore(wf).expect_partial()
             stat.run_restore_ops(sess)
         except Exception as ex:
             self.log.error('Error loading weight file ' + wf)

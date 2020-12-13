@@ -10,7 +10,7 @@ from __future__ import division
 from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
-from differentiable_filtering import filter_cell_base as base
+from differentiable_filters.filters import filter_cell_base as base
 
 
 class UKFCell(base.FilterCellBase):

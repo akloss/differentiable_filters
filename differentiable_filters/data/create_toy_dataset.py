@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Created on Fri Mar  6 15:39:22 2020
@@ -10,8 +11,7 @@ from __future__ import division
 from __future__ import print_function, unicode_literals
 
 import numpy as np
-import scipy.linalg as sp
-from differentiable_filtering import recordio as tfr
+from differentiable_filters.contexts import recordio as tfr
 import logging
 import os
 import cv2
@@ -27,12 +27,17 @@ class ToyExample():
         self.name = param.name
         self.num_examples = param.num_examples
         self.sequence_length = param.sequence_length
+        self.file_size = min(self.num_examples, param.file_size)
+        self.debug = param.debug
 
         self.spring_force = 0.05
         self.drag_force = 0.0075
 
         self.cols = [(0, 255, 0), (0, 0, 255), (0, 255, 255), (255, 0, 255),
                      (255, 255, 0), (255, 255, 255)]
+
+        if not os.path.exists(self.out_dir):
+            os.makedirs(self.out_dir)
 
         # setup logging
         self.log = logging.getLogger(param.name)
@@ -73,16 +78,20 @@ class ToyExample():
         train_data = {key: [] for key in self.keys}
 
         self.record_writer_train = \
-            tfr.RecordioWriter(self.out_dir, 500, self.name + '_train_')
+            tfr.RecordioWriter(self.out_dir, self.file_size,
+                               self.name + '_train_')
         self.record_meta_train = tfr.RecordMeta(self.name + '_train_')
         self.record_writer_val = \
-            tfr.RecordioWriter(self.out_dir, 500, self.name + '_val_')
+            tfr.RecordioWriter(self.out_dir, self.file_size,
+                               self.name + '_val_')
         self.record_meta_val = tfr.RecordMeta(self.name + '_val_')
         self.record_writer_test = \
-            tfr.RecordioWriter(self.out_dir, 500, self.name + '_test_')
+            tfr.RecordioWriter(self.out_dir, self.file_size,
+                               self.name + '_test_')
         self.record_meta_test = tfr.RecordMeta(self.name + '_test_')
 
         self.ct = 0
+        self.log.info('Starting to generate dataset ' + self.name)
         while train_count < self.num_examples:
             values = self._get_data(num_distractors, hetero_q, corr_q,
                                     pos_noise)
@@ -91,12 +100,16 @@ class ToyExample():
                 values['image'].mean(axis=0).mean(axis=0).mean(axis=0)
             for key in self.keys:
                 train_data[key] += [values[key]]
-            if len(train_data['image']) > 1000:
+            if len(train_data['image']) > self.file_size:
                 train_size, val_size, test_size = self._save(train_data)
                 train_count += train_size
                 val_count += val_size
                 test_count += test_size
                 train_data = {key: [] for key in self.keys}
+
+            if len(train_data['image']) % 250 == 0:
+                self.log.info('Done ' + str(len(train_data['image'])) +
+                              ' of ' + str(self.num_examples))
         if len(train_data['image']) > 0:
             train_size, val_size, test_size = self._save(train_data)
             train_count += train_size
@@ -114,9 +127,13 @@ class ToyExample():
         fi.write('mean rgb: ' + str(mean_rgb / (count)) + '\n')
         fi.close()
 
+        self.log.info('Done')
+
         self.record_writer_train.close()
         self.record_writer_test.close()
         self.record_writer_val.close()
+
+        return
 
     def _get_data(self, num_distractors, hetero_q, corr_q, pos_noise):
         states = []
@@ -169,7 +186,7 @@ class ToyExample():
             distractors = new_distractors
             last_state = state
 
-        if self.ct < 3:
+        if self.ct < 3 and self.debug:
             for i, im in enumerate(images):
                 fig, ax = plt.subplots()
                 ax.set_axis_off()
@@ -224,14 +241,14 @@ class ToyExample():
             if hetero_q:
                 if np.abs(state[0]) > self.im_size//2 - self.im_size//6 or \
                         np.abs(state[1]) > self.im_size//2 - self.im_size//6:
-                     velocity_noise = np.random.normal(loc=0, scale=0.1,
-                                                       size=(2))
-                     q = 0.1
+                    velocity_noise = np.random.normal(loc=0, scale=0.1,
+                                                      size=(2))
+                    q = 0.1
                 elif np.abs(state[0]) > self.im_size//2 - self.im_size//3 or \
                         np.abs(state[1]) > self.im_size//2 - self.im_size//3:
-                     velocity_noise = np.random.normal(loc=0, scale=1.,
-                                                       size=(2))
-                     q = 1.
+                    velocity_noise = np.random.normal(loc=0, scale=1.,
+                                                      size=(2))
+                    q = 1.
                 else:
                     velocity_noise = np.random.normal(loc=0, scale=3.,
                                                       size=(2))
@@ -248,17 +265,16 @@ class ToyExample():
         else:
             pn = 3.0
             cn = 2
-            pns = pos_noise**2
             c1 = -0.4
             c2 = 0.2
             c3 = 0.9
             c4 = -0.1
             c5 = 0
 
-            covar = np.array([[pn**2,    c1*pn*pn, c2*pn*cn,  c3*pn*cn],
-                              [c1*pn*pn, pn**2,    c4*pn*cn,  c5*pn*cn],
-                              [c2*pn*cn, c4*pn*cn, cn**2,     0],
-                              [c3*pn*cn, c5*pn*cn, 0,         cn**2]])
+            covar = np.array([[pn**2, c1*pn*pn, c2*pn*cn, c3*pn*cn],
+                              [c1*pn*pn, pn**2, c4*pn*cn, c5*pn*cn],
+                              [c2*pn*cn, c4*pn*cn, cn**2, 0],
+                              [c3*pn*cn, c5*pn*cn, 0, cn**2]])
 
             mean = np.zeros((4))
             noise = np.random.multivariate_normal(mean, covar)
@@ -312,24 +328,38 @@ class ToyExample():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser('toy')
+    parser = argparse.ArgumentParser('toy datset')
     parser.add_argument('--name', dest='name', type=str, default='toy')
-    parser.add_argument('--out-dir', dest='out_dir', type=str,
-                        default='/Volumes/private/akloss/data/filtering_toy',
+    parser.add_argument('--out-dir', dest='out_dir', type=str, required=True,
                         help='where to store results')
     parser.add_argument('--sequence-length', dest='sequence_length', type=int,
-                        default=50)
-    parser.add_argument('--width', dest='width', type=int, default=120)
+                        default=50, help='length of the generated sequences')
+    parser.add_argument('--width', dest='width', type=int, default=120,
+                        help='width (= height) of the generated observations')
     parser.add_argument('--num-examples', dest='num_examples', type=int,
-                        default=2000)
+                        default=2000,
+                        help='how many training examples should be generated')
+    parser.add_argument('--file-size', dest='file_size', type=int,
+                        default=500,
+                        help='how many examples per file should be saved in ' +
+                        'one record')
     parser.add_argument('--hetero-q', dest='hetero_q', type=int,
-                        default=0, choices=[0, 1])
+                        default=0, choices=[0, 1],
+                        help='if the process noise should be heteroscedastic '
+                        + 'or contstant')
     parser.add_argument('--correlated-q', dest='correlated_q', type=int,
-                        default=0, choices=[0, 1])
+                        default=0, choices=[0, 1],
+                        help='if the process noise should have a full or a '
+                        + 'diagonal covariance matrix')
     parser.add_argument('--pos-noise', dest='pos_noise', type=float,
-                        default=0.1)
+                        default=0.1,
+                        help='sigma for the positional process noise')
     parser.add_argument('--num-distractors', dest='num_distractors', type=int,
-                        default=5)
+                        default=5, help='number of distractor disc')
+    parser.add_argument('--debug', dest='debug', type=int,
+                        default=0, choices=[0, 1],
+                        help='Write out images for three sequences as debug ' +
+                        'output')
 
     args = parser.parse_args(argv)
 

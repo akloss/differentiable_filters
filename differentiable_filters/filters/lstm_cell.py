@@ -11,8 +11,8 @@ from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
 import numpy as np
-from differentiable_filtering import filter_cell_base as base
-from differentiable_filtering import base_layer as base2
+from differentiable_filters.filters import filter_cell_base as base
+from differentiable_filters.contexts import base_layer as base2
 
 
 class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
@@ -36,7 +36,7 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
         self.structure = self.param['lstm_structure']
         self.num_units = self.param['num_units']
 
-        if self.structure == 'lstm':
+        if self.structure == 'lstm2':
             self.lstm1 = tf.keras.layers.LSTMCell(self.num_units)
             self.lstm2 = tf.keras.layers.LSTMCell(self.num_units)
 
@@ -89,13 +89,13 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
         It can be represented by an Integer, a TensorShape or a tuple of
         Integers or TensorShapes.
         """
-        if self.structure in ['lstm', 'lstm1_2', 'lstm2_2']:
+        if self.structure in ['lstm2']:
             # internal states of the first and second lstm (hidden and carry)
             # and ouput state + covariance
             return [[self.num_units], [self.num_units], [self.num_units],
                     [self.num_units], [self.dim_x], [self.dim_x*self.dim_x],
                     [1]]
-        elif self.structure in ['lstm1', 'lstm1_1', 'lstm2_1']:
+        elif self.structure in ['lstm1']:
             # internal states of the lstm (hidden and carry)
             # and ouput state + covariance
             return [[self.num_units], [self.num_units], [self.dim_x],
@@ -134,7 +134,7 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
         """
         # turn off the '/rnn' name scope to improve summary logging
         with tf.name_scope(""):
-            if self.structure == 'lstm':
+            if self.structure == 'lstm2':
                 hidden1_old, carry1_old, hidden2_old, carry2_old, \
                     state_old, covar_old, step = states
             else:
@@ -168,7 +168,7 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
                 encoded_observations = tf.concat([pos_fc, rot_fc, rns_fc2],
                                                  axis=-1)
 
-            if self.structure == 'lstm':
+            if self.structure == 'lstm2':
                 # we actually only use the initial state as input in the first
                 # step
                 if self.context.param['problem'] == 'kitti':
@@ -230,7 +230,7 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
             output = self.decoder_fc3(decoder_fc2)
 
             if self.context.param['problem'] == 'kitti' and \
-                    self.structure in ['lstm', 'lstm1']:
+                    self.structure in ['lstm2', 'lstm1']:
                 out_state = output[:, :self.dim_x+2]
                 out_covar = output[:, self.dim_x+2:]
                 ct = out_state[:, 2:3]
@@ -258,7 +258,7 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
 
             out_covar = tf.reshape(out_covar, [self.batch_size, -1])
 
-            if self.structure in ['lstm']:
+            if self.structure in ['lstm2']:
                 # the recurrent state contains the updated internal states of
                 # both lstms,the output and updated step
                 new_state = (hidden1, carry1, hidden, carry2, out_state,

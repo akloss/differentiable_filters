@@ -12,7 +12,7 @@ from __future__ import print_function, unicode_literals
 import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
-from differentiable_filtering import filter_cell_base as base
+from differentiable_filters.filters import filter_cell_base as base
 
 
 class MCUKFCell(base.FilterCellBase):
