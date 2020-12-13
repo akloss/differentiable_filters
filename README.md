@@ -3,6 +3,10 @@ tensorflow (1.14) code for the paper "How to train your differentiable filter".
 
 Implements the Extended Kalman filter, the Unscented Kalman filter, a sampling based Unscented Kalman filter and the Particle filter as differentiable recurrent network layers. 
 
+Under "contexts", the three example tasks used in the paper with their specific implementations for process and sensor model as well as noise models can be found.
+
+Look at filter_network.py to see how a context and a differentiable filter (DF) can be combined into an instance of tf.keras.Model.
+
 ## Disclaimer: Work in progress
 This initial release mainly contains the code as it was used to produce the results in the paper. Upcoming releases will include an easier-to-use minimal example and a port to tensorflow 2. 
 
@@ -22,9 +26,9 @@ python3 setup.py install
 First create a dataset, for example
 
 ```
-create_toy_dataset --out-dir=[path/to/data] --num-examples=100
+create_toy_dataset --out-dir=[path/to/data] --num-examples=50
 ```
-This will create a small dataset for the simulated disc tracking task named "toy_pn=0.1_d=5_const", i.e. a set with constant process noise (sigma_p = 0.1) and 5 distractor discs. Note that the dataset is still going to be rather big (~ 1GB) and saving might take a while. To reduce the dataset size, reduce the sequence length or the number of examples.
+This will create a (very) small dataset for the simulated disc tracking task named "toy_pn=0.1_d=5_const", i.e. a set with constant process noise (sigma_p = 0.1) and 5 distractor discs. Note that the dataset is still going to be rather big (~ 1GB) and saving might take a while. To reduce the dataset size, reduce the sequence length or the number of examples.
 
 Now create a directory for the output of the training somewhere. Then, run for example
 ```
