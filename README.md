@@ -22,7 +22,7 @@ python3 setup.py install
 First create a dataset, e.g.
 
 ```
-create_toy_dataset --out-dir=[path/to/data] --num-examples=100
+create_toy_dataset --out-dir=[path/to/data] --num-examples=500
 ```
 This will create a small dataset for the simulated disc tracking task named "toy_pn=0.1_d=5_const", i.e. a set with constant process noise (sigma_p = 0.1) and 5 distractor discs.
 
