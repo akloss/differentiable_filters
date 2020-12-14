@@ -29,13 +29,15 @@ First create a dataset, for example
 create_toy_dataset --out-dir=[path/to/data] --num-examples=50
 ```
 This will create a (very) small dataset for the simulated disc tracking task named "toy_pn=0.1_d=5_const", i.e. a set with constant process noise (sigma_p = 0.1) and 5 distractor discs. Note that the filesize for the dataset is still going to be rather big (~ 1GB) and saving might take a while. To further reduce the dataset size, reduce the sequence length or the number of examples.
-The num-examples used in the paper is 2000.
+The paper used --num-examples=2000.
 
-Now create a directory for the output of the training somewhere. Then, run for example
+
+Next, create a directory for the output of the training somewhere. Then, run for example
 ```
 run_filter_experiment --name=my_first_df --problem=toy --filter=ekf --data-name-train=toy_pn=0.1_d=5_const --data-dir=[path/to/data] --out-dir=[path/to/output] --pretrain-process=1 --pretrain-observations=0 --scale=100 --hetero-r=1 --hetero-q=0
 ```
-This will train a differentiable EKF with heteroscedastic observation noise (hetero-r=1) and constant process noise (hetero-q=0). pretrain-process=1 defines that a pretrained process model should be used. By default, the pretrained process noise will not be used (to do so, set use-pretrained-covar=1). If no trained model is available, the pretraining will be done automatically. scale=100 downscales the complete state-space by a factor of 100, which we found empirically useful.
+This will train a differentiable EKF with heteroscedastic observation noise (--hetero-r=1) and constant process noise (--hetero-q=0). pretrain-process=1 defines that a pretrained process model should be used. By default, the pretrained process noise will not be used (to do so, set --use-pretrained-covar=1). If no trained model is available, the pretraining will be done automatically. --scale=100 downscales the complete state-space by a factor of 100, which we found empirically useful.
+
 
 The script has many more parameters to determine the behaviour of the DF and the training process. You can get a list by typing
 ```
