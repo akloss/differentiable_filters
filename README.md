@@ -46,7 +46,7 @@ run_filter_experiment -h
 
 ## Data
 Datsets for the disc trackign task can be generated as described above using the ```create_toy_dataset``` script.
-For kitti, the raw data has to be downloaded first. We ued the data provided for the paper  "Differentiable Particle Filters: End-to-End Learning with Algorithmic Priors" (Jonschkowski et al. 2018) (https://arxiv.org/pdf/1805.11122.pdf), which can be downloaded using the setup script here: https://github.com/tu-rbo/differentiable-particle-filters.
+For kitti, the raw data has to be downloaded first. We ued the data provided for the paper  "Differentiable Particle Filters: End-to-End Learning with Algorithmic Priors" (Jonschkowski et al. 2018, https://arxiv.org/pdf/1805.11122.pdf), which can be downloaded using the setup script here: https://github.com/tu-rbo/differentiable-particle-filters.
 Then, use the script ```create_kitti_dataset``` to create the data.
 
 Generating the pushing data is more complex and is currently not included in this package. If you are interested, please contact me.
