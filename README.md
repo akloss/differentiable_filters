@@ -28,7 +28,8 @@ First create a dataset, for example
 ```
 create_toy_dataset --out-dir=[path/to/data] --num-examples=50
 ```
-This will create a (very) small dataset for the simulated disc tracking task named "toy_pn=0.1_d=5_const", i.e. a set with constant process noise (sigma_p = 0.1) and 5 distractor discs. Note that the dataset is still going to be rather big (~ 1GB) and saving might take a while. To reduce the dataset size, reduce the sequence length or the number of examples.
+This will create a (very) small dataset for the simulated disc tracking task named "toy_pn=0.1_d=5_const", i.e. a set with constant process noise (sigma_p = 0.1) and 5 distractor discs. Note that the filesize for the dataset is still going to be rather big (~ 1GB) and saving might take a while. To further reduce the dataset size, reduce the sequence length or the number of examples.
+The num-examples used in the paper is 2000.
 
 Now create a directory for the output of the training somewhere. Then, run for example
 ```
