@@ -36,7 +36,7 @@ Next, create a directory for the output of the training somewhere. Then, run for
 ```
 run_filter_experiment --name=my_first_df --problem=toy --filter=ekf --data-name-train=toy_pn=0.1_d=5_const --data-dir=[path/to/data] --out-dir=[path/to/output] --pretrain-process=1 --pretrain-observations=0 --scale=100 --hetero-r=1 --hetero-q=0
 ```
-This will train a differentiable EKF with heteroscedastic observation noise (--hetero-r=1) and constant process noise (--hetero-q=0). pretrain-process=1 defines that a pretrained process model should be used. By default, the pretrained process noise will not be used (to do so, set --use-pretrained-covar=1). If no trained model is available, the pretraining will be done automatically. --scale=100 downscales the complete state-space by a factor of 100, which we found empirically useful.
+This will train a differentiable EKF with heteroscedastic observation noise (`--hetero-r=1`) and constant process noise (`--hetero-q=0`). `--pretrain-process=1` defines that a pretrained process model should be used. By default, the pretrained process noise will not be used (to do so, set `--use-pretrained-covar=1`). If no trained model is available, the pretraining will be done automatically. `--scale=100` downscales the complete state-space by a factor of 100, which we found empirically useful.
 
 
 The script has many more parameters to determine the behaviour of the DF and the training process. You can get a list by typing
@@ -45,9 +45,9 @@ run_filter_experiment -h
 ```
 
 ## Data
-Datsets for the disc trackign task can be generated as described above using the ```create_toy_dataset``` script.
-For kitti, the raw data has to be downloaded first. We ued the data provided for the paper  "Differentiable Particle Filters: End-to-End Learning with Algorithmic Priors" (Jonschkowski et al. 2018, https://arxiv.org/pdf/1805.11122.pdf), which can be downloaded using the setup script here: https://github.com/tu-rbo/differentiable-particle-filters.
-Then, use the script ```create_kitti_dataset``` to create the data.
+Datsets for the disc tracking task can be generated as described above using the `create_toy_dataset` script.
+For kitti, the raw data has to be downloaded first. We ued the data provided for the paper  "Differentiable Particle Filters: End-to-End Learning with Algorithmic Priors" ([Jonschkowski et al. 2018](https://arxiv.org/pdf/1805.11122.pdf)), which can be downloaded using the setup script [here](https://github.com/tu-rbo/differentiable-particle-filters).
+Then, use the script `create_kitti_dataset` to create the data.
 
 Generating the pushing data is more complex and is currently not included in this package. If you are interested, please contact me.
 
