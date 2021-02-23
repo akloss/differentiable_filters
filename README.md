@@ -1,5 +1,5 @@
 # differentiable_filters
-tensorflow (1.14) code for the paper "How to Train Your Differentiable Filter". 
+TensorFlow (1.14) code for the paper [How to Train Your Differentiable Filter](https://arxiv.org/abs/2012.14313). 
 
 Implements the Extended Kalman filter, the Unscented Kalman filter, a sampling based Unscented Kalman filter and the Particle filter as differentiable recurrent network layers. 
 
