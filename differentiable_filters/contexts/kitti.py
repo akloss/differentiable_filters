@@ -61,7 +61,6 @@ class Context(base.BaseContext):
             self.r_diag = np.array(cov).astype(np.float32)
         else:
             self.r_diag = np.ones((self.dim_z)).astype(np.float32)
-
         self.r_diag = self.r_diag.astype(np.float32) / self.scale
 
         # if the noise matrices are not learned, we construct the fixed
@@ -404,7 +403,7 @@ class Context(base.BaseContext):
                           tf.reduce_mean(dist_v_obs))
         tf.summary.scalar('observation_loss/dist_dt',
                           tf.reduce_mean(dist_dt_obs))
-        return total, [likelihood, dist, dist_obs, total_mse,
+        return total, [likelihood, total_dist, dist_obs, total_mse,
                        endpoint_error_tr, endpoint_error_rot, m_per_tr,
                        deg_per_tr, dist_v_obs, dist_dt_obs, wd] + dists, \
             ['likelihood', 'dist', 'dist_obs', 'mse', 'end_tr', 'end_rot',
@@ -1215,7 +1214,8 @@ class Context(base.BaseContext):
     ######################################
     def save_log(self, log_dict, out_dir, step, num, mode):
         if mode == 'filter':
-            keys = ['likelihood', 'likelihood_std', 'dist', 'dist_std',
+            keys = ['noise_num', 'likelihood', 'likelihood_std', 'dist',
+                    'dist_std',
                     'dist_obs', 'dist_obs_std', 'm_tr', 'm_tr_std', 'deg_tr',
                     'deg_tr_std',
                     'x', 'x_std', 'y', 'y_std', 'theta', 'theta_std',
@@ -1224,7 +1224,9 @@ class Context(base.BaseContext):
 
             log_file = open(os.path.join(out_dir, str(step) + '_res.csv'), 'a')
             log = csv.DictWriter(log_file, fieldnames=keys)
-            log.writeheader()
+            if num == 0:
+                log.writeheader()
+
             non_num = [str, bool, np.str, np.bool]
 
             row = {}
@@ -1232,6 +1234,7 @@ class Context(base.BaseContext):
                 if k in keys and type(v[0]) not in non_num:
                     row[k] = np.mean(v)
                     row[k + '_std'] = np.std(v)
+            row['noise_num'] = num
             log.writerow(row)
             log_file.close()
         else:
