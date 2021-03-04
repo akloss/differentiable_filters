@@ -418,7 +418,7 @@ class Context(base.BaseContext):
         tf.summary.scalar('noise_loss/vis', tf.reduce_mean(vis_label))
         tf.summary.scalar('noise_loss/dist_q', tf.reduce_mean(dist_q))
         tf.summary.scalar('noise_loss/corr_r', tf.reduce_mean(corr_r))
-        return total, [likelihood, dist, dist_obs, mse] + dists + \
+        return total, [likelihood, total_dist, dist_obs, total_mse] + dists + \
             [dist_x_obs, dist_y_obs, dist_q, vis_label, diag_r, wd], \
             ['likelihood', 'dist', 'dist_obs', 'mse', 'x', 'y', 'vx', 'vy',
              'x_obs', 'y_obs', 'q', 'vis', 'r_pred', 'wd']

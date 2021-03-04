@@ -424,7 +424,7 @@ class Context(base.BaseContext):
     def _compute_sq_distance(self, pred, label, rotation=False):
         diff = pred - label
         if rotation:
-            diff = self._correct_theta(diff)
+            diff = self._correct_theta(diff, self.scale)
         diff = tf.square(diff)
         diff = tf.reduce_sum(diff, axis=-1)
 

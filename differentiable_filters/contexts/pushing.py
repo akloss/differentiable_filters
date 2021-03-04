@@ -361,7 +361,6 @@ class Context(base.BaseContext):
         diff = seq_label - states
         diff = self.correct_state(diff)
 
-
         # get the likelihood
         if self.param['filter'] == 'pf' and self.param['mixture_likelihood']:
             num = particles.get_shape()[2].value
@@ -514,7 +513,7 @@ class Context(base.BaseContext):
         for i, name in enumerate(self.z_names):
             tf.summary.scalar('observation_loss/' + name,
                               tf.reduce_mean(dist_obs[i]))
-        return total, [likelihood, tracking_dist, dist_ob, total_mse,
+        return total, [likelihood, total_dist, dist_ob, total_mse,
                        dist_tr, dist_rot, m_per_tr, deg_per_deg, vis,
                        seq_label[:, :, 9], diag_r, diag_q, wd] +\
             dists, ['likelihood', 'dist', 'dist_obs', 'mse', 'dist_tr',
