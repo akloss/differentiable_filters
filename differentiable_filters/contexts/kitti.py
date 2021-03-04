@@ -306,21 +306,30 @@ class Context(base.BaseContext):
         else:
             likelihood = self._likelihood(diff, covars, reduce_mean=False)
 
+        # compensate for scaling
+        offset = tf.ones_like(likelihood)*tf.math.log(self.scale)*2*self.dim_x
+        likelihood += 0.5 * offset
+
         # compute the errors of the predicted states
-        mses = []
+        total_mse, total_dist = self._mse(diff, reduce_mean=False)
+        total_mse *= self.scale**2
+        total_dist *= self.scale
+
+        # compute component-wise distances
         dists = []
         for i in range(self.dim_x):
-            mse, dist = self._mse(diff[:, :, i:i+1], reduce_mean=False)
-            # undo the overall scaling for dist and mse, but only undo the
-            # component-wise scaling for dist
-            mses += [mse*self.scale**2]
+            _, dist = self._mse(diff[:, :, i:i+1], reduce_mean=False)
             dists += [dist*self.scale]
-        mse = tf.add_n(mses)
-        dist = tf.add_n(dists)
 
         # compute the output metric
-        m_m, deg_m, m_per_tr, deg_per_tr = \
+        m_per_tr, deg_per_tr = \
             self._output_loss(states, seq_label, mv_tr)
+
+        # compute the endpoint error
+        _, endpoint_error_tr = self._mse(diff[:, -1, 0:2], reduce_mean=False)
+        endpoint_error_tr *= self.scale
+        _, endpoint_error_rot = self._mse(diff[:, -1, 2:3], reduce_mean=False)
+        endpoint_error_rot *= self.scale
 
         # compute the error in the predicted observations (only for monitoring)
         diff_obs = self.correct_observation_diff(seq_label[:, :, 3:] - z)
@@ -332,7 +341,8 @@ class Context(base.BaseContext):
         dist_v_obs = dist_v_obs * self.scale
         dist_dt_obs = dist_dt_obs * self.scale
 
-        dist_obs = dist_v_obs + dist_dt_obs
+        _, dist_obs = self._mse(diff_obs, reduce_mean=False)
+        dist_obs *= self.scale
 
         # get the weight decay
         wd = []
@@ -348,7 +358,7 @@ class Context(base.BaseContext):
 
         # add a bias to all losses that use the likelihood, to set off
         # possible negative values of the likelihood
-        total_tracking = tf.reduce_mean(mse)
+        total_tracking = tf.reduce_mean(total_mse)
         if self.loss == 'like':
             total_loss = tf.reduce_mean(likelihood)
         elif self.loss == 'error':
@@ -385,8 +395,6 @@ class Context(base.BaseContext):
         tf.summary.scalar('loss/wd', wd)
         tf.summary.scalar('loss/likelihood', tf.reduce_mean(likelihood))
         tf.summary.scalar('loss/tracking', total_tracking)
-        tf.summary.scalar('out/m_per_m', m_m)
-        tf.summary.scalar('out/deg_per_m', deg_m)
         tf.summary.scalar('out/m_per_tr', m_per_tr)
         tf.summary.scalar('out/deg_per_tr', deg_per_tr)
         for i, name in enumerate(self.x_names):
@@ -396,26 +404,23 @@ class Context(base.BaseContext):
                           tf.reduce_mean(dist_v_obs))
         tf.summary.scalar('observation_loss/dist_dt',
                           tf.reduce_mean(dist_dt_obs))
-        return total, [likelihood, dist, dist_obs, mse, m_m, deg_m, m_per_tr,
+        return total, [likelihood, dist, dist_obs, total_mse,
+                       endpoint_error_tr, endpoint_error_rot, m_per_tr,
                        deg_per_tr, dist_v_obs, dist_dt_obs, wd] + dists, \
-            ['likelihood', 'dist', 'dist_obs', 'mse', 'm_m', 'deg_m',
+            ['likelihood', 'dist', 'dist_obs', 'mse', 'end_tr', 'end_rot',
              'm_tr', 'deg_tr', 'v_obs', 'dt_obs', 'wd'] + self.x_names
 
     def _output_loss(self, pred, label, mv_tr):
         endpoint_error = self._compute_sq_distance(pred[:, -1, 0:2],
                                                    label[:, -1, 0:2])
-        seq_length = self._compute_sq_distance(label[:, 0, 0:2],
-                                               label[:, -1, 0:2])
-        m_m = tf.reduce_mean(endpoint_error**0.5/seq_length**0.5)
 
         endpoint_error_rot = self._compute_sq_distance(pred[:, -1, 2:3],
                                                        label[:, -1, 2:3], True)
-        deg_m = tf.reduce_mean(endpoint_error_rot**0.5/seq_length**0.5)
 
         m_per_tr = tf.reduce_mean(endpoint_error**0.5/mv_tr)
         deg_per_tr = tf.reduce_mean(endpoint_error_rot**0.5/mv_tr)
 
-        return m_m, deg_m, m_per_tr, deg_per_tr
+        return m_per_tr, deg_per_tr
 
     def _compute_sq_distance(self, pred, label, rotation=False):
         diff = pred - label
@@ -1211,10 +1216,11 @@ class Context(base.BaseContext):
     def save_log(self, log_dict, out_dir, step, num, mode):
         if mode == 'filter':
             keys = ['likelihood', 'likelihood_std', 'dist', 'dist_std',
-                    'dist_obs', 'dist_obs_std', 'm_m', 'm_m_std', 'deg_m',
-                    'deg_m_std', 'm_tr', 'm_tr_std', 'deg_tr', 'deg_tr_std',
+                    'dist_obs', 'dist_obs_std', 'm_tr', 'm_tr_std', 'deg_tr',
+                    'deg_tr_std',
                     'x', 'x_std', 'y', 'y_std', 'theta', 'theta_std',
-                    'v', 'v_std', 'theta_dot', 'theta_dot_std', ]
+                    'v', 'v_std', 'theta_dot', 'theta_dot_std',
+                    'end_tr', 'end_tr_std', 'end_rot', 'end_rot_std']
 
             log_file = open(os.path.join(out_dir, str(step) + '_res.csv'), 'a')
             log = csv.DictWriter(log_file, fieldnames=keys)
@@ -1519,6 +1525,7 @@ class Context(base.BaseContext):
             fig2.savefig(os.path.join(out_dir, str(num) + "_final_2d"),
                          bbox_inches="tight")
 
+
 class SensorModel(BaseLayer):
     def __init__(self, batch_size, normalize, summary, trainable):
         super(SensorModel, self).__init__()
@@ -1762,7 +1769,7 @@ class Likelihood(BaseLayer):
         num_pred = particles.get_shape()[1].value
 
         # tile the encoding
-        encoding = tf.tile(encoding[:, None, :], [1,  num_pred, 1])
+        encoding = tf.tile(encoding[:, None, :], [1, num_pred, 1])
         input_data = tf.concat([encoding, particles], axis=-1)
         input_data = tf.reshape(input_data, [bs * num_pred, -1])
 
@@ -1789,10 +1796,10 @@ class ObservationModel(BaseLayer):
     def call(self, inputs, training):
         bs = inputs.get_shape()[0].value // self.batch_size
         H = tf.concat(
-                [tf.tile(np.array([[[0, 0, 0, 1, 0]]], dtype=np.float32),
-                         [self.batch_size, 1, 1]),
-                 tf.tile(np.array([[[0, 0, 0, 0, 1]]], dtype=np.float32),
-                         [self.batch_size, 1, 1])], axis=1)
+            [tf.tile(np.array([[[0, 0, 0, 1, 0]]], dtype=np.float32),
+                     [self.batch_size, 1, 1]),
+             tf.tile(np.array([[[0, 0, 0, 0, 1]]], dtype=np.float32),
+                     [self.batch_size, 1, 1])], axis=1)
 
         z_pred = tf.matmul(tf.tile(H, [bs, 1, 1]),
                            tf.expand_dims(inputs, -1))

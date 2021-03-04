@@ -321,27 +321,31 @@ class Context(base.BaseContext):
             likelihood = self._mixture_likelihood(particle_diff, weights)
         else:
             likelihood = self._likelihood(diff, covars, reduce_mean=False)
+
         # compensate for scaling
         offset = tf.ones_like(likelihood)*tf.math.log(self.scale)*2*self.dim_x
-        likelihood += offset
+        likelihood += 0.5 * offset
 
-        # compute the errors of the predicted state
-        mses = []
+        # compute the errors of the predicted states
+        total_mse, total_dist = self._mse(diff, reduce_mean=False)
+        total_mse *= self.scale**2
+        total_dist *= self.scale
+
+        # compute component-wise distances
         dists = []
-        for k in range(self.dim_x):
-            mse, dist = self._mse(diff[:, :, k:k+1], reduce_mean=False)
-            mses += [mse*self.scale**2]
+        for i in range(self.dim_x):
+            _, dist = self._mse(diff[:, :, i:i+1], reduce_mean=False)
             dists += [dist*self.scale]
-        mse = tf.add_n(mses)
-        dist = tf.add_n(dists)
 
+        # compute the error in the predicted observations (only for monitoring)
         # compute the error in the predicted observations (only for monitoring)
         diff_obs = seq_label[:, :, :2] - z
         mse_x_obs, dist_x_obs = \
             self._mse(diff_obs[:, :, :1], reduce_mean=False)
         mse_y_obs, dist_y_obs = \
             self._mse(diff_obs[:, :, 1:], reduce_mean=False)
-        dist_obs = (dist_x_obs + dist_y_obs) * self.scale
+        _, dist_obs = self._mse(diff_obs, reduce_mean=False)
+        dist_obs *= self.scale
 
         # compute the error of the predicted process noise
         if len(q_label.get_shape()) == 3:
@@ -373,7 +377,7 @@ class Context(base.BaseContext):
             wd += la.losses
         wd = tf.add_n(wd)
 
-        total_tracking = tf.reduce_mean(mse)
+        total_tracking = tf.reduce_mean(total_mse)
         if self.loss == 'like':
             total_loss = tf.reduce_mean(likelihood)
         elif self.loss == 'error':

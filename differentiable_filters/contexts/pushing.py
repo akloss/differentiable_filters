@@ -361,13 +361,6 @@ class Context(base.BaseContext):
         diff = seq_label - states
         diff = self.correct_state(diff)
 
-        # version that excludes l and mu from the loss
-        diff_red = tf.concat([diff[:, :, :3], diff[:, :, 5:]], axis=-1)
-        covar_red = tf.concat([tf.concat([covars[:, :, :3, :3],
-                                          covars[:, :, :3, 5:]], axis=-1),
-                               tf.concat([covars[:, :, 5:, :3],
-                                          covars[:, :, 5:, 5:]], axis=-1)],
-                              axis=-2)
 
         # get the likelihood
         if self.param['filter'] == 'pf' and self.param['mixture_likelihood']:
@@ -375,32 +368,26 @@ class Context(base.BaseContext):
             seq_label_tiled = tf.tile(seq_label[:, :, None, :], [1, 1, num, 1])
 
             particle_diff = self.correct_state(seq_label_tiled - particles)
-            particle_diff_red = tf.concat([particle_diff[:, :, :, :3],
-                                           particle_diff[:, :, :, 5:]],
-                                          axis=-1)
             likelihood = self._mixture_likelihood(particle_diff, weights)
-            likelihood_red = self._mixture_likelihood(particle_diff_red,
-                                                      weights)
         else:
             likelihood = self._likelihood(diff, covars, reduce_mean=False)
-            likelihood_red = self._likelihood(diff_red, covar_red,
-                                              reduce_mean=False)
+
+        # compensate for scaling
+        offset = tf.ones_like(likelihood)*tf.math.log(self.scale)*2*self.dim_x
+        likelihood += 0.5 * offset
 
         # compute the errors of the predicted states
-        mses = []
-        mses_red = []
+        total_mse, total_dist = self._mse(diff, reduce_mean=False)
+        total_mse *= self.scale**2
+        total_dist *= self.scale
+
+        # compute component-wise distances
         dists = []
         for i in range(self.dim_x):
-            mse, dist = self._mse(diff[:, :, i:i+1], reduce_mean=False)
-            # undo the overall scaling for dist and mse
-            mses += [mse*self.scale**2]
+            _, dist = self._mse(diff[:, :, i:i+1], reduce_mean=False)
             dists += [dist*self.scale]
-            if i not in [3, 4]:
-                mses_red += [mse*self.scale**2]
-        tracking_mse = tf.add_n(mses)
-        tracking_mse_red = tf.add_n(mses_red)
-        tracking_dist = tf.add_n(dists)
 
+        # position and orientation error
         _, dist_tr = self._mse(diff[:, :, 0:2], reduce_mean=False)
         _, dist_rot = self._mse(diff[:, :, 2:3], reduce_mean=False)
 
@@ -408,12 +395,17 @@ class Context(base.BaseContext):
         diff_obs = tf.concat([seq_label[:, :, :3] - z[:, :, 0:3],
                               seq_label[:, :, 5:] - z[:, :, 3:]], axis=-1)
         diff_obs = self.correct_observation_diff(diff_obs)
+
+        # rsme
+        _, dist_ob = self._mse(diff_obs, reduce_mean=False)
+        dist_ob *= self.scale
+
+        # component-wise
         dist_obs = []
         for i in range(self.dim_z):
             _, dist = self._mse(diff_obs[:, :, i:i+1], reduce_mean=False)
             dist = dist*self.scale
             dist_obs += [dist]
-        dist_ob = tf.add_n(dist_obs)
 
         # compute the correlation between predicted observation noise and
         # the number of visible object pixels
@@ -477,22 +469,14 @@ class Context(base.BaseContext):
 
         # add a bias to all losses that use the likelihood, to set off
         # possible negative values of the likelihood
-        total_tracking = tf.reduce_mean(tracking_mse)
-        total_tracking_red = tf.reduce_mean(tracking_mse_red)
-        total_obs = tf.reduce_mean(dist_obs)
+        total_tracking = tf.reduce_mean(total_mse)
+        total_obs = tf.reduce_mean(dist_ob)
         if self.loss == 'like':
             total_loss = tf.reduce_mean(likelihood)
-        elif self.loss == 'like_red':
-            total_loss = tf.reduce_mean(likelihood_red)
         elif self.loss == 'error':
             total_loss = total_tracking
         elif self.loss == 'mixed':
             total_loss = (total_tracking + tf.reduce_mean(likelihood)) / 2.
-        elif self.loss == 'error_red':
-            total_loss = total_tracking_red
-        elif self.loss == 'mixed_red':
-            total_loss = (total_tracking_red +
-                          tf.reduce_mean(likelihood_red)) / 2.
         elif self.loss == 'mixed_error':
             total_loss = total_tracking * 0.75 + \
                 tf.reduce_mean(likelihood) * 0.25
@@ -530,7 +514,7 @@ class Context(base.BaseContext):
         for i, name in enumerate(self.z_names):
             tf.summary.scalar('observation_loss/' + name,
                               tf.reduce_mean(dist_obs[i]))
-        return total, [likelihood, tracking_dist, dist_ob, tracking_mse,
+        return total, [likelihood, tracking_dist, dist_ob, total_mse,
                        dist_tr, dist_rot, m_per_tr, deg_per_deg, vis,
                        seq_label[:, :, 9], diag_r, diag_q, wd] +\
             dists, ['likelihood', 'dist', 'dist_obs', 'mse', 'dist_tr',
