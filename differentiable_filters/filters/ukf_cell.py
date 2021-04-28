@@ -1,53 +1,50 @@
-# -*- coding: utf-8 -*-
 """
-Created on Tue Mar  3 12:56:47 2020
-
-@author: akloss
+RNN cell implementing a Differentiable Monte Carlo Unscented Kalman Filter
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
 from differentiable_filters.filters import filter_cell_base as base
-
+import differentiable_filters.utils.tensorflow_compatability as compat
 
 class UKFCell(base.FilterCellBase):
-    def __init__(self, param, context):
+    def __init__(self, context, problem, alpha=1, kappa=0.5, beta=0,
+                 update_rate=1, debug=False):
         """
         RNN cell implementing a Differentiable Monte Carlo Unscented Kalman
         Filter
 
         Parameters
         ----------
-        param : dict
-            parmaters
         context : tf.keras.Model
             A context class that implements all functions that are specific to
             the filtering problem (e.g. process and observation model)
+        problem : str
+            A string identifyer for the problem defined by the context
+        alpha : float, optional
+            Scaling parameter for placing the sigma points. Should be in
+            ]0, 1]. Default is 1 (no scaling).
+        kappa : float, optional
+            Another parameter for placing the sigma points. If alpha is set
+            to 1, we recommend a small positive value. Otherwise, 0 is
+            recommended. Default is 0.5
+        beta : float, optional
+            Another parameter for placing the sigma points. If alpha is set to
+            1, use beta=0. Otherwise, beta=2 is optimal if the underlying
+            distribution is gaussian. Default is 0.
+        update_rate : int, optional
+            The rate at which observations come in (allows simulating lower
+            observation rates). Default is 1
+        debug : bool, optional
+            If true, the filters will print out information at each step.
+            Default is False.
         """
-        base.FilterCellBase.__init__(self, param, context)
+        base.FilterCellBase.__init__(self, context, problem, update_rate=1,
+                                     debug=False)
 
         # parameter for setting the sigma points
-        if 'scaled' in param.keys() and \
-                param['scaled'] is not None:
-            self.scaled = param['scaled']
-        else:
-            self.scaled = False
-
-        if self.scaled:
-            self.kappa = 0
-            self.beta = 2
-            if 'scaled_alpha' in param.keys() and \
-                    param['scaled_alpha'] is not None:
-                self.alpha = param['scaled_alpha']
-            else:
-                self.alpha = 0.5
-        else:
-            self.beta = 0
-            self.alpha = 1
-            self.kappa = param['kappa']
+        self.beta = beta
+        self.alpha = alpha
+        self.kappa = kappa
 
         self.num_sigma = 2 * self.dim_x + 1
 
@@ -103,32 +100,25 @@ class UKFCell(base.FilterCellBase):
 
             ###################################################################
             # preproess the raw observations
-            z, encoding = self.context.sensor_model(raw_observations, training)
-
-            if self.learn_r:
-                R = self.context.observation_noise(
-                    encoding, hetero=self.hetero_r,
-                    diag=self.diagonal_covar, training=training)
-            else:
-                R = tf.tile(self.context.R[None, :, :],
-                            [self.batch_size, 1, 1])
+            z, encoding = self.context.run_sensor_model(raw_observations,
+                                                        training)
+            R = self.context.get_observation_noise(encoding, training=training)
             ###################################################################
             # calculate the sigma points (state samples)
             sigma_points, weights_m, weights_c = \
                 self._get_sigma_points(state_old, covar_old)
 
+            print_ops = []
             if self.debug:
-                sigma_points = tf.Print(sigma_points, [tf.squeeze(step)],
-                                        message='---------------- \n step \n ')
-                sigma_points = tf.Print(sigma_points, [state_old],
-                                        summarize=1000, message='state old \n')
-                sigma_points = tf.Print(sigma_points, [covar_old],
-                                        summarize=1000, message='covar old \n')
-                sigma_points = tf.Print(sigma_points, [sigma_points[0:3]],
-                                        summarize=10000,
-                                        message='sigma points\n')
-                sigma_points = tf.Print(sigma_points, [actions[0:3]],
-                                        summarize=10000, message='actions\n')
+                print_ops += [tf.print('------------------- \n step \n ',
+                                       tf.squeeze(step))]
+                print_ops += [tf.print('old state: ', state_old[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('old covar: ', covar_old[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('sigma points: ', sigma_points[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('actions: ', actions[0], summarize=-1)]
 
             # predict the next state
             sigma_points_pred, Q = \
@@ -142,7 +132,7 @@ class UKFCell(base.FilterCellBase):
                 self.context.weighted_state_mean_with_angles(sigma_points_pred,
                                                              weights_m)
 
-            if self.kappa > 0:
+            if self.kappa/(self.kappa + self.dim_x) > 0:
                 diff = sigma_points_pred - state_pred[:, None, :]
                 diff = self.context.correct_state(diff)
                 diff_square = tf.matmul(diff[:, :, :, None],
@@ -152,8 +142,8 @@ class UKFCell(base.FilterCellBase):
                                               weights_c[:, :, :, None]),
                                   axis=1)
             else:
-                # for negative kappa, the above would not be guaranteed to give
-                # a positive semidefinite covariance matrix
+                # for negative unscaled w0, the above would not be guaranteed
+                # to give a positive semidefinite covariance matrix
                 # this alternative formulation was proposed in appedix III of
                 # Julier, Simon J. et al. “A new method for the nonlinear
                 # transformation of means and covariances in filters and
@@ -169,26 +159,20 @@ class UKFCell(base.FilterCellBase):
             covar_pred += Q
 
             if self.debug:
-                sigma_points_pred = tf.Print(sigma_points_pred,
-                                             [sigma_points_pred],
-                                             summarize=100000,
-                                             message='sigma points pred\n')
-                sigma_points_pred = tf.Print(sigma_points_pred, [state_pred],
-                                             summarize=10000,
-                                             message='state pred\n')
-                sigma_points_pred = tf.Print(sigma_points_pred, [covar_pred],
-                                             summarize=10000,
-                                             message='covar pred\n')
-                sigma_points_pred = tf.Print(sigma_points_pred, [Q],
-                                             summarize=100000, message='Q\n')
-                sigma_points_pred = tf.Print(sigma_points_pred, [R],
-                                             summarize=100000, message='R\n')
+                print_ops += [tf.print('predicted sigma points: ',
+                                       sigma_points_pred[0], summarize=-1)]
+                print_ops += [tf.print('predicted state: ', state_pred[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('predicted covar: ', covar_pred[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('Q: ', Q[0], summarize=-1)]
+                print_ops += [tf.print('R: ', R[0], summarize=-1)]
 
             # get the expected observations for each sigma point
             z_points_pred, H = \
-                self.context.observation_model(tf.reshape(sigma_points_pred,
-                                                          [-1, self.dim_x]),
-                                               training=training)
+                self.context.run_observation_model(tf.reshape(sigma_points_pred,
+                                                              [-1, self.dim_x]),
+                                                   training=training)
             # restore the sigma dimension
             z_points_pred = tf.reshape(z_points_pred,
                                        [self.batch_size, -1, self.dim_z])
@@ -197,16 +181,17 @@ class UKFCell(base.FilterCellBase):
                 self.context.weighted_observation_mean_with_angles(z_points_pred,
                                                                    weights_m)
             if self.debug:
-                z_pred = tf.Print(z_pred, [z_points_pred], summarize=100000,
-                                  message='zs pred\n')
-                z_pred = tf.Print(z_pred, [z_pred], summarize=10000,
-                                  message='mean z pred\n')
+                print_ops += [tf.print('predicted per sigma point zs: ',
+                                       z_points_pred[0], summarize=-1)]
+                print_ops += [tf.print('predicted mean z: ', z_pred[0],
+                                       summarize=-1)]
 
             ###################################################################
             # update the predictions with the observations
             state_up, covar_up = \
                 self._update(state_pred, covar_pred, sigma_points_pred,
-                             weights_c, z_pred, z_points_pred, H, z, R)
+                             weights_c, z_pred, z_points_pred, H, z, R,
+                             print_ops)
 
             # this lets us emulate not getting observations at every step
             state = tf.cond(tf.equal(tf.math.mod(step[0, 0],
@@ -217,8 +202,11 @@ class UKFCell(base.FilterCellBase):
                             lambda: covar_up, lambda: covar_pred)
 
             # now flatten the tensors again for output
-            state = tf.reshape(state, [self.batch_size, -1])
-            covar = tf.reshape(covar, [self.batch_size, -1])
+            # the control_dependency statement ensures that the debug print
+            # operations are executed in tf1. graph mode as well
+            with tf.control_dependencies(print_ops):
+                state = tf.reshape(state, [self.batch_size, -1])
+                covar = tf.reshape(covar, [self.batch_size, -1])
 
             # the recurrent state contains the updated state estimate
             new_state = (state, covar, step + 1)
@@ -226,9 +214,7 @@ class UKFCell(base.FilterCellBase):
             # we can output additional output, but it also makes sense to add
             # the predicted state here again to have access to the full
             # sequence of states after running the network
-            output = (tf.reshape(state, [self.batch_size, -1]),
-                      tf.reshape(covar, [self.batch_size, -1]),
-                      tf.reshape(z, [self.batch_size, -1]),
+            output = (state, covar, z,
                       tf.reshape(R, [self.batch_size, -1]),
                       tf.reshape(Q, [self.batch_size, -1]))
 
@@ -327,20 +313,14 @@ class UKFCell(base.FilterCellBase):
         actions = tf.reshape(actions, [-1, 2])
 
         sigma_points_pred, _ = \
-            self.context.process_model(sigma_points, actions,
-                                       self.learn_process, training)
+            self.context.run_process_model(sigma_points, actions, training)
 
         sigma_points_pred = self.context.correct_state(sigma_points_pred,
                                                        diff=False)
 
         # get the process noise
-        if self.learn_q:
-            Q = self.context.process_noise(
-                sigma_points, actions, learned=self.learn_process,
-                hetero=self.hetero_q, diag=self.diagonal_covar,
-                training=training)
-        else:
-            Q = tf.tile(self.context.Q[None, :, :], [self.batch_size, 1, 1])
+        Q = self.context.get_process_noise(sigma_points, actions,
+                                           training=training)
 
         # restore the sigma dimension
         sigma_points_pred = tf.reshape(sigma_points_pred,
@@ -348,7 +328,7 @@ class UKFCell(base.FilterCellBase):
                                         self.dim_x])
         # when we use heteroscedastic noise, we get one Q per sigma point, so
         # we use the weighted mean
-        if self.hetero_q and self.learn_q:
+        if compat.get_dim_int(Q, 0) > self.batch_size:
             Q = tf.reshape(Q, [self.batch_size, self.num_sigma, self.dim_x,
                                self.dim_x])
             Q = tf.reduce_sum(tf.multiply(Q, weights_m[:, :, :, None]), axis=1)
@@ -356,7 +336,7 @@ class UKFCell(base.FilterCellBase):
         return sigma_points_pred, Q
 
     def _update(self, state_pred, covar_pred, sigma_points_pred, weights_c,
-                z_pred, z_points_pred, H, z, R):
+                z_pred, z_points_pred, H, z, R, print_ops):
         """
         Update step of the UKF
 
@@ -396,10 +376,9 @@ class UKFCell(base.FilterCellBase):
         update = tf.squeeze(tf.matmul(K, innovation), -1)
 
         if self.debug:
-            update = tf.Print(update, [z], summarize=10000, message='z \n')
-            update = tf.Print(update, [K], summarize=10000, message='K \n')
-            update = tf.Print(update, [update], summarize=10000,
-                              message='update \n')
+            print_ops += [tf.print('real z: ', z[0], summarize=-1)]
+            print_ops += [tf.print('K: ', K[0], summarize=-1)]
+            print_ops += [tf.print('state update: ', update[0], summarize=-1)]
 
         # Compute the new state
         state_up = state_pred + update

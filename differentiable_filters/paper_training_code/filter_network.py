@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Sun Dec 13 11:24:05 2020
-
-@author: alina
+Classes that combine a differentiable filter and a problem context to run
+filtering or pretraining on this problem.
 """
 
-import tensorflow as tf
+# this code only works with tensorflow 1
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+
 import numpy as np
 
 
@@ -47,23 +47,35 @@ class Filter(tf.keras.Model):
 
         # optional scaling factor for the state-space
         self.scale = param['scale']
+        update_rate = param['update_rate']
+        debug = param['debug']
+        problem = param['problem']
 
         # instantiate the desired filter cell
         if self.param['filter'] == 'ekf':
             from differentiable_filters.filters import ekf_cell as ekf
-            self.cell = ekf.EKFCell(self.param, self.context)
+            self.cell = ekf.EKFCell(context, problem, update_rate, debug)
         elif self.param['filter'] == 'ukf':
             from differentiable_filters.filters import ukf_cell as ukf
-            self.cell = ukf.UKFCell(self.param, self.context)
+            self.cell = ukf.UKFCell(context, problem, param['scaled_alpha'],
+                                    param['kappa'], param['beta'], update_rate,
+                                    debug)
         elif self.param['filter'] == 'mcukf':
             from differentiable_filters.filters import mcukf_cell as mcukf
-            self.cell = mcukf.MCUKFCell(self.param, self.context)
+            self.cell = mcukf.MCUKFCell(context, problem, param['num_samples'],
+                                        update_rate, debug)
         elif self.param['filter'] == 'pf':
             from differentiable_filters.filters import pf_cell as pf
-            self.cell = pf.PFCell(self.param, self.context)
+            self.cell = pf.PFCell(context, problem, param['num_samples'],
+                                  param['learned_likelihood'],
+                                  param['resample_rate'], param['alpha'],
+                                  update_rate, debug)
         elif self.param['filter'] == 'lstm':
             from differentiable_filters.filters import lstm_cell as lstm
-            self.cell = lstm.UnstructuredCell(self.param, self.context)
+            self.cell = lstm.UnstructuredCell(context, problem,
+                                              param['lstm_structure'],
+                                              param['num_units'],
+                                              update_rate, debug)
         else:
             self.log.error('Unknown filter type: ' + self.param['filter'])
             raise ValueError('Unknown filter type: ' + self.param['filter'])
@@ -346,6 +358,30 @@ class Filter(tf.keras.Model):
         return res
 
     def get_loss(self, prediction, label, step, training):
+        """
+        Return the loss and additional metrics
+
+        Parameters
+        ----------
+        prediction : list of tensors
+            The prediction from the model
+        label : list of tensors
+            The labels
+        step : int
+            The current trainign step
+        training : bool
+            If the model is run in training or test mode
+
+        Returns
+        -------
+        loss : tensor
+            The training loss
+        metrics : list of tensors
+            Additional metrics we might want to log for evaluation
+        metric-names : list of str
+            The names for those metrics
+
+        """
         return self.context.get_filter_loss(prediction, label, step, training)
 
     ###########################################################################
@@ -355,6 +391,28 @@ class Filter(tf.keras.Model):
                       num_threads=3):
         """
         Defines how to read in the data from a tf record
+
+        Parameters
+        ----------
+        path : str
+            Path to the directory that contains the tf.Record files
+        name : str
+            The name of the dataset.
+        dataset : tf.data.Dataset
+            Atf.data.TFRecordDataset object that contains the filenames of all
+            tf.Records to read in.
+        data_mode : str
+            Defines for which data split the data is read. Can be "train",
+            "val" or "test"
+        num_threads : int, optional
+            The number of threads used to preeprocess the data. The default is
+            3.
+
+        Returns
+        -------
+        dataset : tf.data.Dataset
+            A dataset with input and label tensors.
+
         """
         return self.context.tf_record_map(path, name, dataset, data_mode,
                                           train_mode, num_threads)
@@ -362,10 +420,52 @@ class Filter(tf.keras.Model):
     ###########################################################################
     # Evaluation
     ###########################################################################
-    def save_log(self, log_dict, out_dir, step, num, mode):
-        self.context.save_log(log_dict, out_dir, step, num, mode)
+    def save_log(self, log_dict, out_dir, step, noise_num, mode='filter'):
+        """
+        Saves the results of evalaution in a .csv file
+
+        Parameters
+        ----------
+        log_dict : dict
+            Dictionary containing the output metrics from evalauting the model.
+        out_dir : str
+            Where to store the results.
+        step : int
+            Training step at which the model is evaluated.
+        noise_num : int
+            The index of the initial noise vector that was used to perturb the
+            initial states for evaluation.
+        mode : str, optional
+            Indicates if the logged result is for filtering or pretraining.
+            Default is "filter".
+
+        Returns
+        -------
+        None.
+
+        """
+        self.context.save_log(log_dict, out_dir, step, noise_num, mode)
 
     def get_fetches(self, inputs, labels, prediction):
+        """
+        Defines which additional tensors from the model should be feteched
+        for evaluation.
+
+        Parameters
+        ----------
+        inputs : list of tensors
+            The input tensors to the model
+        labels : list of tensors
+            The labels
+        prediction : list of tensors
+            The output of the model
+
+        Returns
+        -------
+        out : dict
+            A dictionary of which tensors to fetch.
+
+        """
         particles, weights, seq_pred, cov_pred, init_s, init_c, z, r, q = \
             prediction
         state = labels[0]
@@ -422,13 +522,24 @@ class Filter(tf.keras.Model):
     def evaluate(self, loss_dict, additional, out_dir, step):
         """
         Space for additional evaluations after testing
-        Args:
-            loss_dict: dictionary that contains a list of all values for the
-                loss and all loss components
-            additional: dictionary that contains a list of all values that
-                were fetched through get_fetches
-            out_dir: where to store results
-            step: the training-step that we evaluate (use for naming)
+
+        Parameters
+        ----------
+        loss_dict : dict
+            dictionary that contains a list of all tensors for the loss and all
+            loss components
+        additional: dict
+            dictionary that contains a list of all tensors that were fetched
+            through get_fetches
+        out_dir : str
+            Path to where to store the results
+        step : int
+            training step at which the model is evaluated.
+
+        Returns
+        -------
+        None.
+
         """
 
         for i in [0, 3, 8]:
@@ -608,31 +719,34 @@ class PretrainObservations(tf.keras.Model):
             else:
                 raw_observations, true_z, good_z, bad_z = inputs
 
-            z, encoding = self.context.sensor_model(raw_observations, training)
+            z, encoding = self.context.run_sensor_model(raw_observations,
+                                                        training)
 
             if self.param['problem'] == 'pushing':
                 pix = encoding[-1]
                 seg = encoding[0]
 
-            R_const_diag = \
-                self.context.observation_noise(encoding, hetero=False,
-                                               diag=True,
-                                               training=training)
-            R_const_tri = \
-                self.context.observation_noise(encoding, hetero=False,
-                                               diag=False,
-                                               training=training)
-            R_het_diag = \
-                self.context.observation_noise(encoding, hetero=True,
-                                               diag=True,
-                                               training=training)
-            R_het_tri = \
-                self.context.observation_noise(encoding, hetero=True,
-                                               diag=False,
-                                               training=training)
 
-            like_good = self.context.likelihood(good_z, encoding, training)
-            like_bad = self.context.likelihood(bad_z, encoding, training)
+
+            R_const_diag = \
+                self.context.observation_noise_const_diag(encoding,
+                                                          training=training)
+            R_const_tri = \
+                self.context.observation_noise_const_full(encoding,
+                                                          training=training)
+            R_het_diag = \
+                self.context.observation_noise_hetero_diag(encoding,
+                                                           training=training)
+            R_het_tri = \
+                self.context.observation_noise_hetero_full(encoding,
+                                                           training=training)
+
+            like_good = \
+                self.context.get_observation_likelihood(good_z, encoding,
+                                                        training)
+            like_bad = \
+                self.context.get_observation_likelihood(bad_z, encoding,
+                                                        training)
 
             # add summaries
             tf.summary.histogram('predicted_likelihood/good', like_good)
@@ -665,6 +779,30 @@ class PretrainObservations(tf.keras.Model):
                 like_good, like_bad
 
     def get_loss(self, prediction, label, step, training):
+        """
+        Return the loss and additional metrics
+
+        Parameters
+        ----------
+        prediction : list of tensors
+            The prediction from the model
+        label : list of tensors
+            The labels
+        step : int
+            The current trainign step
+        training : bool
+            If the model is run in training or test mode
+
+        Returns
+        -------
+        loss : tensor
+            The training loss
+        metrics : list of tensors
+            Additional metrics we might want to log for evaluation
+        metric-names : list of str
+            The names for those metrics
+
+        """
         return self.context.get_observation_loss(prediction, label, step,
                                                  training)
 
@@ -675,6 +813,28 @@ class PretrainObservations(tf.keras.Model):
                       num_threads=3):
         """
         Defines how to read in the data from a tf record
+
+        Parameters
+        ----------
+        path : str
+            Path to the directory that contains the tf.Record files
+        name : str
+            The name of the dataset.
+        dataset : tf.data.Dataset
+            Atf.data.TFRecordDataset object that contains the filenames of all
+            tf.Records to read in.
+        data_mode : str
+            Defines for which data split the data is read. Can be "train",
+            "val" or "test"
+        num_threads : int, optional
+            The number of threads used to preeprocess the data. The default is
+            3.
+
+        Returns
+        -------
+        dataset : tf.data.Dataset
+            A dataset with input and label tensors.
+
         """
         return self.context.tf_record_map(path, name, dataset, data_mode,
                                           train_mode, num_threads)
@@ -682,8 +842,32 @@ class PretrainObservations(tf.keras.Model):
     ###########################################################################
     # Evaluation
     ###########################################################################
-    def save_log(self, log_dict, out_dir, step, num, mode):
-        self.context.save_log(log_dict, out_dir, step, num, mode)
+    def save_log(self, log_dict, out_dir, step, noise_num,
+                 mode='pretrain_obs'):
+        """
+        Saves the results of evalaution in a .csv file
+
+        Parameters
+        ----------
+        log_dict : dict
+            Dictionary containing the output metrics from evalauting the model.
+        out_dir : str
+            Where to store the results.
+        step : int
+            Training step at which the model is evaluated.
+        noise_num : int
+            The index of the initial noise vector that was used to perturb the
+            initial states for evaluation.
+        mode : str, optional
+            Indicates if the logged result is for filtering or pretraining.
+            Default is "pretrain_obs".
+
+        Returns
+        -------
+        None.
+
+        """
+        self.context.save_log(log_dict, out_dir, step, noise_num, mode)
 
     def get_fetches(self, inputs, labels, prediction):
         out = {}
@@ -751,41 +935,41 @@ class PretrainProcess(tf.keras.Model):
                 # inform the context about the current objects (for dealing
                 # with different rotational symmetries)
                 self.context.ob = info[0]
-            else:
-                last_state, actions = inputs
+                inputs = (last_state, actions)
+
             next_state, _ = \
-                self.context.process_model(last_state, actions, True,
-                                           training=training)
+                self.context.process_model_learned_layer(inputs,
+                                                         training=training)
             next_state_ana, _ = \
-                self.context.process_model(last_state, actions, False,
-                                           training=training)
+                self.context.process_model_analytical_layer(inputs,
+                                                            training=training)
 
             # we have to cover all  cases
             Q_const_diag = \
-                self.context.process_noise(last_state, actions, True, False,
-                                           True, training=training)
+                self.context.process_noise_const_diag_lrn(inputs,
+                                                          training=training)
             Q_const_tri = \
-                self.context.process_noise(last_state, actions, True, False,
-                                           False, training=training)
-            Q_het_diag = self.context.process_noise(last_state, actions, True,
-                                                    True, True,
-                                                    training=training)
-            Q_het_tri = self.context.process_noise(last_state, actions, True,
-                                                   True, False,
-                                                   training=training)
+                self.context.process_noise_const_full_lrn(inputs,
+                                                          training=training)
+            Q_het_diag = \
+                self.context.process_noise_hetero_diag_lrn(inputs,
+                                                           training=training)
+            Q_het_tri = \
+                self.context.process_noise_hetero_full_lrn(inputs,
+                                                           training=training)
 
             Q_const_diag_ana = \
-                self.context.process_noise(last_state, actions, False, False,
-                                           True, training=training)
+                self.context.process_noise_const_diag_ana(inputs,
+                                                          training=training)
             Q_const_tri_ana = \
-                self.context.process_noise(last_state, actions, False, False,
-                                           False, training=training)
+                self.context.process_noise_const_full_ana(inputs,
+                                                          training=training)
             Q_het_diag_ana = \
-                self.context.process_noise(last_state, actions, False, True,
-                                           True, training=training)
+                self.context.process_noise_hetero_diag_ana(inputs,
+                                                           training=training)
             Q_het_tri_ana = \
-                self.context.process_noise(last_state, actions, False, True,
-                                           False, training=training)
+                self.context.process_noise_hetero_full_ana(inputs,
+                                                           training=training)
 
             # add summaries
             diag_q_const_diag = \
@@ -829,6 +1013,30 @@ class PretrainProcess(tf.keras.Model):
             Q_het_tri_ana, Q_het_diag_ana
 
     def get_loss(self, prediction, label, step, training):
+        """
+        Return the loss and additional metrics
+
+        Parameters
+        ----------
+        prediction : list of tensors
+            The prediction from the model
+        label : list of tensors
+            The labels
+        step : int
+            The current trainign step
+        training : bool
+            If the model is run in training or test mode
+
+        Returns
+        -------
+        loss : tensor
+            The training loss
+        metrics : list of tensors
+            Additional metrics we might want to log for evaluation
+        metric-names : list of str
+            The names for those metrics
+
+        """
         return self.context.get_process_loss(prediction, label, step,
                                              training)
 
@@ -839,6 +1047,28 @@ class PretrainProcess(tf.keras.Model):
                       num_threads=3):
         """
         Defines how to read in the data from a tf record
+
+        Parameters
+        ----------
+        path : str
+            Path to the directory that contains the tf.Record files
+        name : str
+            The name of the dataset.
+        dataset : tf.data.Dataset
+            Atf.data.TFRecordDataset object that contains the filenames of all
+            tf.Records to read in.
+        data_mode : str
+            Defines for which data split the data is read. Can be "train",
+            "val" or "test"
+        num_threads : int, optional
+            The number of threads used to preeprocess the data. The default is
+            3.
+
+        Returns
+        -------
+        dataset : tf.data.Dataset
+            A dataset with input and label tensors.
+
         """
         return self.context.tf_record_map(path, name, dataset, data_mode,
                                           train_mode, num_threads)
@@ -846,8 +1076,32 @@ class PretrainProcess(tf.keras.Model):
     ###########################################################################
     # Evaluation
     ###########################################################################
-    def save_log(self, log_dict, out_dir, step, num, mode):
-        self.context.save_log(log_dict, out_dir, step, num, mode)
+    def save_log(self, log_dict, out_dir, step,  noise_num,
+                 mode='pretrain_process'):
+        """
+        Saves the results of evalaution in a .csv file
+
+        Parameters
+        ----------
+        log_dict : dict
+            Dictionary containing the output metrics from evalauting the model.
+        out_dir : str
+            Where to store the results.
+        step : int
+            Training step at which the model is evaluated.
+        noise_num : int
+            The index of the initial noise vector that was used to perturb the
+            initial states for evaluation.
+        mode : str, optional
+            Indicates if the logged result is for filtering or pretraining.
+            Default is "pretrain_process".
+
+        Returns
+        -------
+        None.
+
+        """
+        self.context.save_log(log_dict, out_dir, step, noise_num, mode)
 
     def get_fetches(self, inputs, labels, prediction):
         out = {}

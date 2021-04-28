@@ -1,8 +1,6 @@
-# -*- coding: utf-8 -*-
 """
-Created on Tue Mar 31 15:18:09 2020
-
-@author: alina
+Analytical functions for computing the process model of the planar pushing
+task and for projection between pixels and 3d world-coordinates
 """
 
 import tensorflow as tf
@@ -11,6 +9,37 @@ import numpy as np
 
 def physical_model(xos, contact_points, normals, actions, friction, mu,
                    contact):
+    """
+    Predict the outcome of a single pushing action given the current state of
+    the object
+
+    Parameters
+    ----------
+    xos : tensor
+        The position of the object's center of mass
+    contact_points : tensor
+        The position of the contact point between pusher and object
+    normals : tensor
+        The normal to the object surface at the contact point
+    actions : tensor
+        The pusher movement (in x and y direction)
+    friction : tensor
+        A friction-related parameter
+    mu : tensor
+        Friction coefficient between pusher and object
+    contact : tensor
+        Indicates if the pusher is in contact with the object at all
+
+    Returns
+    -------
+    tr : tensor
+        The translation of the object in x and y direction
+    rot : tensor
+        The rotation of the object
+    keep_contact : tensor
+        If the pusher will still be in contact with the object after the push
+
+    """
     # softly binarize the contact
     contact = tf.where(tf.greater_equal(contact, 0.5),
                        tf.ones_like(contact), tf.zeros_like(contact))
@@ -38,7 +67,32 @@ def physical_model(xos, contact_points, normals, actions, friction, mu,
     return tr, rot, tf.reshape(keep_contact, [-1, 1])
 
 
-def get_vel_model(vp, rx, ry, fr2):
+def get_vel_model(vp, rx, ry, fr):
+    """
+    Given an effective push, predict the translation and rotation
+    of the object
+
+    Parameters
+    ----------
+    vp : tensor
+        Effective push
+    rx : tensor
+        x-coordinate of the contact point
+    ry : tensor
+        y-coordinate of the contact point
+    fr : tensor
+        Friction related parameter
+
+    Returns
+    -------
+    tx : tensor
+        Translation in x
+    ty : tensor
+        Translation in y
+    rot : tensor
+        Object rotation.
+
+    """
     with tf.variable_scope('calculate_velocity'):
         ux = tf.slice(vp, [0, 0], [-1, 1])
         uy = tf.slice(vp, [0, 1], [-1, 1])
@@ -46,23 +100,50 @@ def get_vel_model(vp, rx, ry, fr2):
         rx2 = tf.square(rx)
         ry2 = tf.square(ry)
 
-        div = fr2 + rx2 + ry2
+        div = fr + rx2 + ry2
 
-        tx_tmp = tf.multiply((fr2 + rx2), ux) + \
+        tx_tmp = tf.multiply((fr + rx2), ux) + \
             tf.multiply(rx, tf.multiply(ry, uy))
         tx = tf.divide(tx_tmp, div)
 
-        ty_tmp = tf.multiply((fr2 + ry2), uy) + \
+        ty_tmp = tf.multiply((fr + ry2), uy) + \
             tf.multiply(rx, tf.multiply(ry, ux))
         ty = tf.divide(ty_tmp, div)
 
         rot_tmp = tf.multiply(rx, ty) - tf.multiply(ry, tx)
-        rot = tf.divide(rot_tmp, fr2)
+        rot = tf.divide(rot_tmp, fr)
 
     return tx, ty, rot
 
 
 def get_contact_mode(rx, ry, action, fr2, mu, normal, contact):
+    """
+    Determines the contact mode (sticking or sliding) and the effective push
+
+    Parameters
+    ----------
+    rx : tensor
+        x-coordinate of the contact point
+    ry : tensor
+        y-coordinate of the contact point
+    action : tensor
+        The pusher movement (in x and y direction)
+    fr2 : tensor
+        Squared version of the friction related parameter
+    friction : tensor
+        A friction-related parameter
+    mu : tensor
+        Friction coefficient between pusher and object
+    contact : tensor
+        Indicates if the pusher is in contact with the object at all
+
+    Returns
+    -------
+    vp_out : tensor
+        the effective push
+    keep_contact : tensor
+        If the pusher will still be in contact with the object after the push
+    """
     # for calculate the boundary forces of the friction cone
     ang = mu/180.*np.pi
 
@@ -184,13 +265,50 @@ def get_contact_mode(rx, ry, action, fr2, mu, normal, contact):
     # in this case, the resulting push velocity is zero
     vp_out = tf.where(lose_contact, 0*vp_out, vp_out)
 
-    return vp_out, tf.logical_not(lose_contact)
+    keep_contact = tf.logical_not(lose_contact)
+
+    return vp_out, keep_contact
 
 
 def physical_model_derivative(xos, contact_points, normals, actions, friction,
                               mu, contact):
     """
-    Same as the above functions, but returns a jacobian for the ekf
+    Predict the outcome of a single pushing action given the current state of
+    the object. In addition, computes derivatives for constructing the jacobian
+    of the process model
+
+    Parameters
+    ----------
+    xos : tensor
+        The position of the object's center of mass
+    contact_points : tensor
+        The position of the contact point between pusher and object
+    normals : tensor
+        The normal to the object surface at the contact point
+    actions : tensor
+        The pusher movement (in x and y direction)
+    friction : tensor
+        A friction-related parameter
+    mu : tensor
+        Friction coefficient between pusher and object
+    contact : tensor
+        Indicates if the pusher is in contact with the object at all
+
+    Returns
+    -------
+    tr : tensor
+        The translation of the object in x and y direction
+    rot : tensor
+        The rotation of the object
+    keep_contact : tensor
+        If the pusher will still be in contact with the object after the push
+    ddx : tensor
+        Derivative of the object x-translation with respect to the input values
+    ddy : tensor
+        Derivative of the object y-translation with respect to the input values
+    dor : tensor
+        Derivative of the object rotation with respect to the input values
+
     """
     bs = contact.get_shape()[0].value
     dim_x = 10
@@ -265,6 +383,36 @@ def physical_model_derivative(xos, contact_points, normals, actions, friction,
 
 
 def get_vel_model_derivative(vp, contact_points, fr):
+    """
+    Given an effective push, predict the translation and rotation
+    of the object. In addition, computes derivatives for constructing the
+    jacobian of the process model
+
+    Parameters
+    ----------
+    vp : tensor
+        Effective push
+    contact_points : tensor
+        contact point
+    fr : tensor
+        Friction related parameter
+
+    Returns
+    -------
+    tx : tensor
+        Translation in x
+    ty : tensor
+        Translation in y
+    rot : tensor
+        Object rotation.
+    dx : tensor
+        Derivative of tx with respect to the input values
+    dy : tensor
+        Derivative of ty with respect to the input values
+    drot : tensor
+        Derivative of rot with respect to the input values
+
+    """
     with tf.variable_scope('calculate_velocity'):
         rx = tf.slice(contact_points, [0, 0], [-1, 1])
         rz = tf.slice(contact_points, [0, 1], [-1, 1])
@@ -315,10 +463,44 @@ def get_vel_model_derivative(vp, contact_points, fr):
     return tx, tz, rot, dx, dy, drot
 
 
-def get_contact_mode_derivative(rx, rz, action, fr, mu, nnx, nny, contact):
+def get_contact_mode_derivative(rx, ry, action, fr, mu, nnx, nny, contact):
+    """
+    Determines the contact mode (sticking or sliding) and the effective push.
+    In addition, computes derivatives for constructing the jacobian
+    of the process model
+
+    Parameters
+    ----------
+    rx : tensor
+        x-coordinate of the contact point
+    ry : tensor
+        y-coordinate of the contact point
+    action : tensor
+        The pusher movement (in x and y direction)
+    fr : tensor
+        A friction related parameter
+    mu : tensor
+        Friction coefficient between pusher and object
+    nx : tensor
+        x-component of the normal
+    ny : tensor
+        y-component of the normal
+    contact : tensor
+        Indicates if the pusher is in contact with the object at all
+
+    Returns
+    -------
+    vp_out : tensor
+        the effective push
+    dvpx : tensor
+        Derivative of the x-component of vp_out with respect to the input values
+    dvpx : tensor
+        Derivative of the y-component of vp_out with respect to the input values
+    keep_contact : tensor
+        If the pusher will still be in contact with the object after the push
+    """
     # dim_x = 10
     bs = rx.get_shape()[0]
-    # fr2 = tf.square(fr)
 
     fri = 100 * fr
     # for calculate the boundary forces of the friction cone
@@ -335,7 +517,7 @@ def get_contact_mode_derivative(rx, rz, action, fr, mu, nnx, nny, contact):
     nz = tf.slice(normal_t, [0, 1], [-1, 1])
 
     # check if the normal points towards the object
-    dir_center = - tf.concat([rx, rz], axis=-1)
+    dir_center = - tf.concat([rx, ry], axis=-1)
     dir_center_norm = tf.linalg.norm(dir_center, axis=-1, keepdims=True)
     dir_center = tf.where(tf.greater(tf.squeeze(dir_center_norm), 0.),
                           dir_center/dir_center_norm, dir_center)
@@ -380,8 +562,8 @@ def get_contact_mode_derivative(rx, rz, action, fr, mu, nnx, nny, contact):
     fbx2, fbz2 = tf.unstack(tf.reshape(fb2, [-1, 2]), axis=-1)
 
     # torque
-    m1 = tf.multiply(rx, fbz1[:, None]) - tf.multiply(rz, fbx1[:, None])
-    m2 = tf.multiply(rx, fbz2[:, None]) - tf.multiply(rz, fbx2[:, None])
+    m1 = tf.multiply(rx, fbz1[:, None]) - tf.multiply(ry, fbx1[:, None])
+    m2 = tf.multiply(rx, fbz2[:, None]) - tf.multiply(ry, fbx2[:, None])
 
     # calculate the velocity at the contact point induced by the
     # boundary-forces
@@ -393,9 +575,9 @@ def get_contact_mode_derivative(rx, rz, action, fr, mu, nnx, nny, contact):
     omega1 = m1
     omega2 = m2
 
-    vbx1 = vx_tmp1 - tf.multiply(omega1, rz)
+    vbx1 = vx_tmp1 - tf.multiply(omega1, ry)
     vbz1 = vz_tmp1 + tf.multiply(omega1, rx)
-    vbx2 = vx_tmp2 - tf.multiply(omega2, rz)
+    vbx2 = vx_tmp2 - tf.multiply(omega2, ry)
     vbz2 = vz_tmp2 + tf.multiply(omega2, rx)
 
     # if we have the slipping case, we need to find the correct
@@ -459,23 +641,23 @@ def get_contact_mode_derivative(rx, rz, action, fr, mu, nnx, nny, contact):
 
     # gradients
     dvpx = tf.stack([tf.reshape(-tf.gradients(vpx, rx)[0], [bs, 1]),
-                     tf.reshape(-tf.gradients(vpx, rz)[0], [bs, 1]),
+                     tf.reshape(-tf.gradients(vpx, ry)[0], [bs, 1]),
                      tf.zeros([bs, 1]),
                      tf.reshape(tf.gradients(vpx, fr)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpx, mu)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpx, rx)[0], [bs, 1]),
-                     tf.reshape(tf.gradients(vpx, rz)[0], [bs, 1]),
+                     tf.reshape(tf.gradients(vpx, ry)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpx, nnx)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpx, nny)[0], [bs, 1]),
                      tf.zeros([bs, 1])], axis=-1)
 
     dvpy = tf.stack([tf.reshape(-tf.gradients(vpy, rx)[0], [bs, 1]),
-                     tf.reshape(-tf.gradients(vpy, rz)[0], [bs, 1]),
+                     tf.reshape(-tf.gradients(vpy, ry)[0], [bs, 1]),
                      tf.zeros([bs, 1]),
                      tf.reshape(tf.gradients(vpy, fr)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpy, mu)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpy, rx)[0], [bs, 1]),
-                     tf.reshape(tf.gradients(vpy, rz)[0], [bs, 1]),
+                     tf.reshape(tf.gradients(vpy, ry)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpy, nnx)[0], [bs, 1]),
                      tf.reshape(tf.gradients(vpy, nny)[0], [bs, 1]),
                      tf.zeros([bs, 1])], axis=-1)

@@ -1,14 +1,12 @@
-# -*- coding: utf-8 -*-
 """
-Created on Thu Mar 12 09:04:00 2020
-
-@author: akloss
+Context class for the simultated disc tracking task as used in the paper
+"How to Train Your Differentiable Filter".
 """
 
-from __future__ import absolute_import, division
-from __future__ import print_function, unicode_literals
+# this code only works with tensorflow 1
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
-import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
 import os
@@ -16,14 +14,29 @@ import csv
 from matplotlib.patches import Ellipse
 import matplotlib.pyplot as plt
 
-from differentiable_filters.contexts import base_context as base
-from differentiable_filters.contexts.base_layer import BaseLayer
-from differentiable_filters.contexts import recordio as tfr
+from differentiable_filters.contexts import paper_base_context as base
+from differentiable_filters.utils.base_layer import BaseLayer
+from differentiable_filters.utils import recordio as tfr
+from differentiable_filters.utils import tensorflow_compatability as compat
 
 
-class Context(base.BaseContext):
+class Context(base.PaperBaseContext):
     def __init__(self, param, mode):
-        base.BaseContext.__init__(self, param, mode)
+        """
+        Context class for the simultated disc tracking task as used in the
+        paper.
+
+        Parameters
+        ----------
+        param : dict
+            A dictionary of arguments
+        mode : string
+            determines which parts of the model are trained. Use "filter" for
+            the whole model, "pretrain_obs" for pretraining the observation
+            related functions of the context in isolation or "pretrain_proc"
+            for pretrainign the process-related functions of the context.
+        """
+        base.PaperBaseContext.__init__(self, param, mode)
 
         # the state size
         self.dim_x = 4
@@ -35,9 +48,6 @@ class Context(base.BaseContext):
 
         self.spring_force = 0.05
         self.drag_force = 0.0075
-
-        self.scale = param['scale']
-        self.sl = param['sequence_length']
 
         # define initial values for the process noise q and observation noise r
         # diagonals
@@ -338,7 +348,6 @@ class Context(base.BaseContext):
             dists += [dist*self.scale]
 
         # compute the error in the predicted observations (only for monitoring)
-        # compute the error in the predicted observations (only for monitoring)
         diff_obs = seq_label[:, :, :2] - z
         mse_x_obs, dist_x_obs = \
             self._mse(diff_obs[:, :, :1], reduce_mean=False)
@@ -422,15 +431,6 @@ class Context(base.BaseContext):
             [dist_x_obs, dist_y_obs, dist_q, vis_label, diag_r, wd], \
             ['likelihood', 'dist', 'dist_obs', 'mse', 'x', 'y', 'vx', 'vy',
              'x_obs', 'y_obs', 'q', 'vis', 'r_pred', 'wd']
-
-    def _bhattacharyya(self, pred, label):
-        mean = (pred + label) / 2.
-        det_mean = tf.linalg.det(mean)
-        det_pred = tf.linalg.det(pred)
-        det_label = tf.linalg.det(label)
-        dist = det_mean/(tf.sqrt(det_pred*det_label))
-        dist = 0.5 * tf.math.log(dist)
-        return dist
 
     def get_observation_loss(self, prediction, label, step, training):
         """
@@ -777,421 +777,201 @@ class Context(base.BaseContext):
         """
         Defines how to read in the data from a tf record
         """
-        keys = ['start_image', 'start_state', 'image', 'state', 'q',
-                'visible']
+        keys = ['start_state', 'image', 'state', 'q', 'visible', 'start_image']
 
         record_meta = tfr.RecordMeta.load(path, name + '_' + data_mode + '_')
 
-        def _parse_function_obs_train(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            state = features['state']/self.scale
-            label = state[:, :2]
-            im = features['image']
-            vis = features['visible']
-
-            # we use several steps of the sequence
-            start_inds = np.random.randint(0, im.get_shape()[0].value-1, 30)
-            num = len(start_inds)
-            self.train_multiplier = num
-
-            # prepare the lists of output tensors
-            ims = []
-            viss = []
-            labels = []
-            good_zs = []
-            bad_zs = []
-            for si in start_inds:
-                ims += [im[si]]
-                viss += [vis[si]]
-                labels += [label[si]]
-                good_noise = np.random.normal(loc=0, scale=2, size=(6, 2))
-                good_noise[0, :] = 0
-                good_zs += [tf.tile(label[si:si+1], [6, 1]) +
-                            good_noise/self.scale]
-                bad_noise = np.random.normal(loc=40, scale=20, size=(6, 2))
-                bad_noise[3:] = np.random.normal(loc=-40, scale=20,
-                                                 size=(3, 2))
-                bad_zs += [tf.tile(label[si:si+1], [6, 1]) +
-                           bad_noise/self.scale]
-
-            values = [tf.stack(ims), tf.stack(labels), tf.stack(good_zs),
-                      tf.stack(bad_zs)]
-            labels = [tf.stack(labels), tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_obs_val(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-
-            state = features['state']/self.scale
-            label = state[:, :2]
-            im = features['image']
-            vis = features['visible']
-
-            ims = []
-            viss = []
-            labels = []
-            good_zs = []
-            bad_zs = []
-            # use every third data point
-            start_inds = np.arange(0, im.get_shape()[0].value-1, 3)
-            for si in start_inds:
-                ims += [im[si]]
-                viss += [vis[si]]
-                labels += [label[si]]
-                good_noise = np.random.normal(loc=0, scale=2, size=(6, 2))
-                good_noise[0, :] = 0
-                good_zs += [tf.tile(label[si:si+1], [6, 1]) +
-                            good_noise/self.scale]
-                bad_noise = np.random.normal(loc=40, scale=20, size=(6, 2))
-                bad_noise[3:] = np.random.normal(loc=-40, scale=20,
-                                                 size=(3, 2))
-                bad_zs += [tf.tile(label[si:si+1], [6, 1]) +
-                           bad_noise/self.scale]
-
-            values = [tf.stack(ims), tf.stack(labels), tf.stack(good_zs),
-                      tf.stack(bad_zs)]
-            labels = [tf.stack(labels), tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_process_train(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            state = features['state']/self.scale
-            q = features['q']
-            actions = state[1:, 2:] - state[:-1, 2:]
-
-            # we use several steps of the sequence
-            start_inds = np.random.randint(1, state.get_shape()[0].value-1, 30)
-            num = len(start_inds)
-            self.train_multiplier = num
-
-            # prepare the lists of output tensors
-            starts = []
-            qs = []
-            labels = []
-            acs = []
-            for si in start_inds:
-                starts += [state[si-1]]
-                qs += [q[si-1]]
-                labels += [state[si]]
-                acs += [actions[si-1]]
-
-            values = [tf.stack(starts), tf.stack(acs)]
-            labels = [tf.stack(labels), tf.stack(qs)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_process_val(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-
-            state = features['state']/self.scale
-            q = features['q']
-            actions = state[1:, 2:] - state[:-1, 2:]
-
-            # use every fith data point
-            start_inds = np.arange(1, state.get_shape()[0].value-1, 5)
-            starts = []
-            qs = []
-            labels = []
-            acs = []
-            for si in start_inds:
-                starts += [state[si-1]]
-                qs += [q[si-1]]
-                labels += [state[si]]
-                acs += [actions[si-1]]
-
-            values = [tf.stack(starts), tf.stack(acs)]
-            labels = [tf.stack(labels), tf.stack(qs)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_train(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            state = features['state']/self.scale
-            start = features['start_state']/self.scale
-            im = features['image']
-            q = features['q']
-            vis = features['visible']
-            actions = state[1:, 2:] - state[:-1, 2:]
-            actions = tf.concat([state[0:1, 2:] - start[None, 2:], actions],
-                                axis=0)
-
-            length = im.get_shape()[0].value
-
-            if self.sl > length:
-                raise ValueError('Desired training sequence length is ' +
-                                 'longer than dataset sequence length: ' +
-                                 'Desired: ' + str(self.sl) + ', data: ' +
-                                 str(length))
-
-            if self.sl == 50:
-                start_inds = [0]
-            else:
-                # we use several sub-sequences of the testsequence, such that
-                # the overall amount of data stays teh same between sequence
-                # lengths (maximum length is 50)
-                num = 50 // self.sl
-                start_inds = \
-                    np.random.randint(0, length-self.sl-1,
-                                      num)
-                self.train_multiplier = num
-
-            # prepare the lists of output tensors
-            ims = []
-            starts = []
-            im_starts = []
-            states = []
-            qs = []
-            viss = []
-            acs = []
-            for si in start_inds:
-                end = si+self.sl
-                ims += [im[si:end]]
-                if si > 0:
-                    im_starts += [im[si-1]]
-                    starts += [state[si-1]]
-                else:
-                    im_starts += [features['start_image']]
-                    starts += [start]
-                states += [state[si:end]]
-                acs += [actions[si:end]]
-                qs += [q[si:end]]
-                viss += [vis[si:end]]
-
-            ims = tf.stack(ims)
-            # observations, actions, initial observations, initial state,
-            # info
-            values = [ims, tf.stack(acs), tf.stack(im_starts),
-                      tf.stack(starts), tf.zeros([ims.get_shape()[0]])]
-            labels = [tf.stack(states), tf.stack(qs), tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_val(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            state = features['state']/self.scale
-            start = features['start_state']/self.scale
-            im = features['image']
-            q = features['q']
-            vis = features['visible']
-            actions = state[1:, 2:] - state[:-1, 2:]
-            actions = tf.concat([state[0:1, 2:] - start[None, 2:],
-                                 actions], axis=0)
-
-            length = im.get_shape()[0].value
-
-            if self.sl > length:
-                raise ValueError('Desired training sequence length is ' +
-                                 'longer than dataset sequence length: ' +
-                                 'Desired: ' + str(self.sl) + ', data: ' +
-                                 str(length))
-
-            if self.sl == 50:
-                start_inds = [-1]
-            else:
-                # we use several sub-sequences of the testsequence, such that
-                # the overall amount of data stays teh same between sequence
-                # lengths (maximum length is 50)
-                num = 50 // self.sl
-                # we use several sub-sequences of the testsequence
-                start_inds = \
-                    np.arange(0, length-self.sl-1, (self.sl+1)//2)
-                start_inds = start_inds[:num]
-
-            # prepare the lists of output tensors
-            ims = []
-            starts = []
-            states = []
-            im_starts = []
-            qs = []
-            viss = []
-            acs = []
-            for si in start_inds:
-                if si >= 0:
-                    end = si+self.sl+1
-                    ims += [im[si+1:end]]
-                    im_starts += [im[si]]
-                    states += [state[si+1:end]]
-                    starts += [state[si]]
-                    acs += [actions[si+1:end]]
-                    qs += [q[si+1:end]]
-                    viss += [vis[si+1:end]]
-                else:
-                    end = si+self.sl+1
-                    ims += [im[si+1:end]]
-                    im_starts += [features['start_image']]
-                    states += [state[si+1:end]]
-                    starts += [start]
-                    acs += [actions[si+1:end]]
-                    qs += [q[si+1:end]]
-                    viss += [vis[si+1:end]]
-
-            ims = tf.stack(ims)
-            # observations, actions, initial observations, initial state,
-            # info
-            values = [ims, tf.stack(acs), tf.stack(im_starts),
-                      tf.stack(starts), tf.zeros([ims.get_shape()[0]])]
-            labels = [tf.stack(states), tf.stack(qs), tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_test(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-
-            state = features['state']/self.scale
-            start = features['start_state']/self.scale
-            im = features['image']
-            q = features['q']
-            vis = features['visible']
-            actions = state[1:, 2:] - state[:-1, 2:]
-            actions = tf.concat([state[0:1, 2:] - start[None, 2:],
-                                 actions], axis=0)
-            # state = tf.concat([start[None, :], state], axis=0)
-            # im = tf.concat([features['start_image'][None, :, :, :], im],
-            #                axis=0)
-
-            length = im.get_shape()[0].value
-
-            if self.sl > length:
-                raise ValueError('Desired testing sequence length is ' +
-                                 'longer than dataset sequence length: ' +
-                                 'Desired: ' + str(self.sl) + ', data: ' +
-                                 str(length))
-
-            if self.sl > features['state'].get_shape()[0].value//2:
-                states = [state[:self.sl]]
-                starts = [start]
-                im_starts = [features['start_image']]
-                ims = [im[:self.sl]]
-                qs = [q[:self.sl]]
-                viss = [vis[:self.sl]]
-                acs = [actions[:self.sl]]
-                num = 1
-            else:
-                # prepend the initial state and image
-                state = tf.concat([start[None, :], state], axis=0)
-                im = tf.concat([features['start_image'][None, :, :, :], im],
-                               axis=0)
-
-                # we use several sub-sequences of the testsequence
-                start_inds = \
-                    np.arange(0, im.get_shape()[0].value-self.sl-1, self.sl//2)
-                num = len(start_inds)
-                # prepare the lists of output tensors
-                ims = []
-                starts = []
-                states = []
-                im_starts = []
-                qs = []
-                viss = []
-                acs = []
-                for si in start_inds:
-                    end = si+self.sl+1
-                    ims += [im[si+1:end]]
-                    im_starts += [im[si]]
-                    states += [state[si+1:end]]
-                    starts += [state[si]]
-                    acs += [actions[si+1:end]]
-                    qs += [q[si+1:end]]
-                    viss += [vis[si+1:end]]
-            self.test_multiplier = num
-
-            ims = tf.stack(ims)
-            # observations, actions, initial observations, initial state,
-            # info
-            values = [ims, tf.stack(acs), tf.stack(im_starts),
-                      tf.stack(starts), tf.zeros([ims.get_shape()[0]])]
-            labels = [tf.stack(states), tf.stack(qs), tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
         if train_mode == 'filter':
-            if data_mode == 'train':
-                dataset = dataset.map(_parse_function_train,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'val':
-                dataset = dataset.map(_parse_function_val,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'test':
-                dataset = dataset.map(_parse_function_test,
-                                      num_parallel_calls=num_threads)
-            dataset = \
-                dataset.flat_map(lambda x, y:
-                                 tf.data.Dataset.from_tensor_slices((x, y)))
+            dataset = dataset.map(
+                lambda x: self._parse_function(x, keys, record_meta,
+                                               data_mode),
+                num_parallel_calls=num_threads)
         elif train_mode == 'pretrain_obs':
-            if data_mode == 'train':
-                dataset = dataset.map(_parse_function_obs_train,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'val' or data_mode == 'test':
-                dataset = dataset.map(_parse_function_obs_val,
-                                      num_parallel_calls=num_threads)
-            dataset = \
-                dataset.flat_map(lambda x, y:
-                                 tf.data.Dataset.from_tensor_slices((x, y)))
+            dataset = dataset.map(
+                lambda x: self._parse_function_obs(x, keys, record_meta,
+                                                   data_mode),
+                num_parallel_calls=num_threads)
         elif train_mode == 'pretrain_process':
-            if data_mode == 'train':
-                dataset = dataset.map(_parse_function_process_train,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'val' or data_mode == 'test':
-                dataset = dataset.map(_parse_function_process_val,
-                                      num_parallel_calls=num_threads)
-            dataset = \
-                dataset.flat_map(lambda x, y:
-                                 tf.data.Dataset.from_tensor_slices((x, y)))
+            dataset = dataset.map(
+                lambda x: self._parse_function_process(x, keys, record_meta,
+                                                       data_mode),
+                num_parallel_calls=num_threads)
         else:
             self.log.error('unknown training mode: ' + train_mode)
 
+        dataset = \
+            dataset.flat_map(lambda x, y:
+                             tf.data.Dataset.from_tensor_slices((x, y)))
+
         return dataset
+
+    def _decode_im(self, im):
+        im = tf.io.decode_image(im, channels=3, dtype=tf.dtypes.uint8)
+        im = tf.cast(im, tf.float32) / 255.
+        im.set_shape([120, 120, 3])
+        return im
+
+    def _parse_example(self, example_proto, keys, record_meta):
+        features = {}
+        for key in keys:
+            record_meta.add_tf_feature(key, features)
+
+        parsed_features = tf.io.parse_single_example(example_proto,
+                                                     features)
+        for key in keys:
+            features[key] = record_meta.reshape_and_cast(key,
+                                                         parsed_features)
+        return features
+
+    def _parse_function_obs(self, example_proto, keys, record_meta, data_mode):
+        features = self._parse_example(example_proto, keys, record_meta)
+
+        state = features['state']/self.scale
+        label = state[:, :2]
+        im = features['image']
+        vis = features['visible']
+
+        # reading in images from bytes
+        im = tf.map_fn(self._decode_im, im, fn_output_signature=tf.float32)
+
+        # we use several steps of the sequence
+        if data_mode == 'train':
+            length = im.get_shape()[0].value
+            start_inds = np.random.randint(0, length-1, 30)
+            self.train_multiplier = len(start_inds)
+        else:
+            # use every third data point
+            start_inds = np.arange(0, im.get_shape()[0].value-1, 3)
+
+        ims = []
+        viss = []
+        labels = []
+        good_zs = []
+        bad_zs = []
+        for si in start_inds:
+            ims += [im[si]]
+            viss += [vis[si]]
+            labels += [label[si]]
+            good_noise = np.random.normal(loc=0, scale=2, size=(6, 2))
+            good_noise[0, :] = 0
+            good_zs += [tf.tile(label[si:si+1], [6, 1]) +
+                        good_noise/self.scale]
+            bad_noise = np.random.normal(loc=40, scale=20, size=(6, 2))
+            bad_noise[3:] = np.random.normal(loc=-40, scale=20,
+                                             size=(3, 2))
+            bad_zs += [tf.tile(label[si:si+1], [6, 1]) +
+                       bad_noise/self.scale]
+
+        values = [tf.stack(ims), tf.stack(labels), tf.stack(good_zs),
+                  tf.stack(bad_zs)]
+        labels = [tf.stack(labels), tf.stack(viss)]
+        return tuple(values), tuple(labels)
+
+    def _parse_function_process(self, example_proto, keys, record_meta,
+                                data_mode):
+        features = self._parse_example(example_proto, keys, record_meta)
+
+        state = features['state']/self.scale
+        q = features['q']
+        actions = state[1:, 2:] - state[:-1, 2:]
+
+        # we use several steps of the sequence
+        if data_mode == 'train':
+            start_inds = np.random.randint(1, state.get_shape()[0].value-1, 30)
+            self.train_multiplier = len(start_inds)
+        else:
+            start_inds = np.arange(1, state.get_shape()[0].value-1, 5)
+
+        starts = []
+        qs = []
+        labels = []
+        acs = []
+        for si in start_inds:
+            starts += [state[si-1]]
+            qs += [q[si-1]]
+            labels += [state[si]]
+            acs += [actions[si-1]]
+
+        values = [tf.stack(starts), tf.stack(acs)]
+        labels = [tf.stack(labels), tf.stack(qs)]
+        return tuple(values), tuple(labels)
+
+    def _parse_function(self, example_proto, keys, record_meta, data_mode):
+        features = self._parse_example(example_proto, keys, record_meta)
+        state = features['state']/self.scale
+        start = features['start_state']/self.scale
+        im = features['image']
+        q = features['q']
+        vis = features['visible']
+        actions = state[1:, 2:] - state[:-1, 2:]
+        actions = tf.concat([state[0:1, 2:] - start[None, 2:], actions],
+                            axis=0)
+
+        # reading in images from bytes
+        im = tf.map_fn(self._decode_im, im, fn_output_signature=tf.float32)
+        start_im = self._decode_im(features['start_image'])
+
+        length = im.get_shape()[0].value
+        if self.sl > length:
+            raise ValueError('Desired sequence length is longer than ' +
+                             'dataset sequence length: Desired: ' +
+                             str(self.sl) + ', data: ' + str(length))
+
+        # if the original sequence is long enough, we use several sub-sequences
+        if self.sl == 50:
+            start_inds = [-1]
+        elif data_mode == 'train':
+            # we use several sub-sequences of the sequence
+            num = 50 // self.sl
+            start_inds = np.random.randint(0, length-self.sl-1, num)
+            self.train_multiplier = num
+        elif data_mode == 'val':
+            num = 50 // self.sl
+            start_inds = np.arange(0, length-self.sl-1, (self.sl+1)//2)
+            start_inds = start_inds[:num]
+        else:
+            if self.sl > length//2:
+                start_inds = [-1]
+            else:
+                start_inds = np.arange(0, length-self.sl-1, (self.sl+1)//2)
+                self.test_multiplier = len(start_inds)
+        num = len(start_inds)
+
+        # prepare the lists of output tensors
+        ims = []
+        starts = []
+        states = []
+        im_starts = []
+        qs = []
+        viss = []
+        acs = []
+        for si in start_inds:
+            if si >= 0:
+                end = si+self.sl+1
+                ims += [im[si+1:end]]
+                im_starts += [im[si]]
+                states += [state[si+1:end]]
+                starts += [state[si]]
+                acs += [actions[si+1:end]]
+                qs += [q[si+1:end]]
+                viss += [vis[si+1:end]]
+            else:
+                end = si+self.sl+1
+                ims += [im[si+1:end]]
+                im_starts += [start_im]
+                states += [state[si+1:end]]
+                starts += [start]
+                acs += [actions[si+1:end]]
+                qs += [q[si+1:end]]
+                viss += [vis[si+1:end]]
+
+        ims = tf.stack(ims)
+        # observations, actions, initial observations, initial state, info
+        values = [ims, tf.stack(acs), tf.stack(im_starts),
+                  tf.stack(starts), tf.zeros([num])]
+        labels = [tf.stack(states), tf.stack(qs), tf.stack(viss)]
+
+        return tuple(values), tuple(labels)
 
     ######################################
     # Evaluation
@@ -1610,7 +1390,7 @@ class ObservationNoise(BaseLayer):
             self.add_weight(name='bias_fixed', shape=[self.dim_z],
                             trainable=False,
                             initializer=tf.constant_initializer(init_const))
-        num = self.dim_z * (self.dim_z + 1) / 2
+        num = self.dim_z * (self.dim_z + 1) // 2
         wd = 1e-3*self.scale**2
 
         if self.hetero and self.diag:
@@ -1675,13 +1455,13 @@ class ObservationNoise(BaseLayer):
             if self.summary:
                 tf.summary.histogram('het_tri_out', tri)
 
-            R = tf.contrib.distributions.fill_triangular(tri)
+            R = compat.fill_triangular(tri)
             R += tf.linalg.diag(self.het_full_init_bias)
             R = tf.matmul(R, tf.linalg.matrix_transpose(R))
             R = R + tf.linalg.diag(self.bias_fixed)
         else:
             tri = self.const_full
-            R = tf.contrib.distributions.fill_triangular(tri)
+            R = compat.fill_triangular(tri)
             R += tf.linalg.diag(self.const_full_init_bias)
             R = tf.matmul(R, tf.linalg.matrix_transpose(R))
             R = R + tf.linalg.diag(self.bias_fixed)
@@ -1852,7 +1632,7 @@ class ProcessNoise(BaseLayer):
             self.add_weight(name='bias_fixed', shape=[self.dim_x],
                             trainable=False,
                             initializer=tf.constant_initializer(init_const))
-        num = self.dim_x * (self.dim_x + 1) / 2
+        num = self.dim_x * (self.dim_x + 1) // 2
 
         wd = 1e-3*self.scale**2
 
@@ -1981,13 +1761,13 @@ class ProcessNoise(BaseLayer):
                     tf.summary.histogram('het_full_lrn_fc2_out', fc2)
                     tf.summary.histogram('het_full_lrn_out', tri)
 
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.het_full_lrn_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)
             else:
                 tri = self.const_full_lrn
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.const_full_lrn_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)
@@ -2018,13 +1798,13 @@ class ProcessNoise(BaseLayer):
                     tf.summary.histogram('het_full_ana_fc2_out', fc2)
                     tf.summary.histogram('het_full_ana_out', tri)
 
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.het_full_ana_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)
             else:
                 tri = self.const_full_ana
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.const_full_ana_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)

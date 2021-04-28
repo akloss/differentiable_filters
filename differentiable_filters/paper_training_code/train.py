@@ -1,17 +1,10 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Sun Dec 13 11:47:57 2020
-
-@author: alina
+Training and validation of a differentiable filter
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
-
-
-import tensorflow as tf
+# this code only works with tensorflow 1
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 import numpy as np
 import os
@@ -21,7 +14,7 @@ import yaml
 from collections import OrderedDict
 import sys
 
-from differentiable_filters import filter_network as filtering
+from differentiable_filters.paper_training_code import filter_network as filtering
 
 
 class TrainNet():
@@ -76,6 +69,15 @@ class TrainNet():
         self.batch_size = param['batch_size']
 
     def load_data(self):
+        """
+        Prepare the data loading
+
+        Returns
+        -------
+        success : bool
+            If the test dataset has been found.
+
+        """
         self.log.info("loading data with name " + self.param['data_name'])
 
         files = os.listdir(self.param['data_dir'])
@@ -158,19 +160,17 @@ class TrainNet():
             # setup the problem context
             ###############################################################
             try:
-                # TODO parameterized import
                 if self.param['problem'] == 'kitti':
-                    from differentiable_filters.contexts import kitti
-                    self.context = kitti.Context(self.param, mode)
+                    from differentiable_filters.contexts import paper_kitti
+                    self.context = paper_kitti.Context(self.param, mode)
                 elif self.param['problem'] == 'toy':
-                    from differentiable_filters.contexts import toy
-                    self.context = toy.Context(self.param, mode)
+                    from differentiable_filters.contexts import paper_disc_tracking
+                    self.context = paper_disc_tracking.Context(self.param, mode)
                 elif self.param['problem'] == 'pushing':
-                    from differentiable_filters.contexts import pushing
-                    self.context = pushing.Context(self.param, mode)
+                    from differentiable_filters.contexts import paper_pushing
+                    self.context = paper_pushing.Context(self.param, mode)
                 else:
-                    self.log.error('Unknown context: ' +
-                                   self.param['problem'])
+                    self.log.error('Unknown context: ' + self.param['problem'])
                     return False
             except Exception as ex:
                 self.log.exception(ex)

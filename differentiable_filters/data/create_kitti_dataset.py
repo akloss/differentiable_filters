@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Wed Sep 19 11:38:26 2018
+Script and class for creating tf.Record datasets for the KITTI visual odometry
+task.
 
-@author: akloss
+Will create 11 different datasets where one sequence is held out as test
+data while the other 10 sequences are used for training and validation.
 """
 
 import argparse
@@ -14,16 +15,49 @@ from random import shuffle
 import logging
 import sys
 from PIL import Image
+import cv2
 
-import differentiable_filters.contexts.recordio as tfr
+import differentiable_filters.utils.recordio as tfr
 
 
 class KittiDataset():
     def __init__(self, param):
+        """
+        Class for creating tf.Record datasets for the KITTI visual odometry
+        task.
+
+        Parameters
+        ----------
+        param : dict
+            Dictionary of parameters
+
+        Returns
+        -------
+        None.
+
+        """
         self.param = param
         self.out_dir = param.out_dir
 
     def create_dataset(self, files_list_train, test_file, name):
+        """
+        Creates a tf.Record dataset with the desired characteristics.
+
+        Parameters
+        ----------
+        files_list_train : list
+            List of the raw data files that belong to the sequences for
+            training and validation.
+        test_file : str
+            Raw data file for the test sequence
+        name : str
+            Name of the dataset
+
+        Returns
+        -------
+        None.
+
+        """
         # setup logging
         self.log = logging.getLogger(self.param.name)
         self.log.setLevel(logging.DEBUG)
@@ -69,12 +103,8 @@ class KittiDataset():
         self.record_meta_test = tfr.RecordMeta(name + '_test_')
 
         for ind, f in enumerate(files_list_train):
-            values_train = self._get_data(f)
+            values_train = self._get_data(f, mean_diff, mean_rgb)
             for d in values_train:
-                mean_diff += \
-                    d['image_diff'].mean(axis=0).mean(axis=0).mean(axis=0)
-                mean_rgb += \
-                    d['image'].mean(axis=0).mean(axis=0).mean(axis=0)
                 for key in self.keys:
                     train_data[key] += [d[key]]
             if len(train_data['image']) > 1000:
@@ -87,12 +117,8 @@ class KittiDataset():
             train_count += train_size
             val_count += val_size
 
-        values_test = self._get_data(test_file, 'test')
+        values_test = self._get_data(test_file, mean_diff, mean_rgb, 'test')
         for d in values_test:
-            mean_diff += \
-                d['image_diff'].mean(axis=0).mean(axis=0).mean(axis=0)
-            mean_rgb += \
-                d['image'].mean(axis=0).mean(axis=0).mean(axis=0)
             for key in self.keys:
                 test_data[key] += [d[key]]
         self._save(test_data)
@@ -113,6 +139,22 @@ class KittiDataset():
         self.record_writer_val.close()
 
     def _save_train_val(self, data):
+        """
+        Save the training and validation data
+
+        Parameters
+        ----------
+        data : dict of lists
+            A dictionary containing the example data
+
+        Returns
+        -------
+        train_size : int
+            Number of training examples saved.
+        val_size : int
+            Number of validation examples saved.
+
+        """
         length = len(data['image'])
         # convert lists to numpy arrays
         for key in self.keys:
@@ -146,6 +188,19 @@ class KittiDataset():
         return train_size, val_size
 
     def _save(self, data):
+        """
+        Save the test data
+
+        Parameters
+        ----------
+        data : dict of lists
+            A dictionary containing the example data
+
+        Returns
+        -------
+        None.
+
+        """
         rw = self.record_writer_test
         rm = self.record_meta_test
 
@@ -160,37 +215,47 @@ class KittiDataset():
         tfr.write_tfr(data, rw, rm, self.out_dir)
         return
 
-    def _get_data(self, filename, mode='train'):
+    def _get_data(self, filename, mean_diff, mean_rgb, mode='train'):
+        """
+        Generat data for one sequence
+
+        Parameters
+        ----------
+        filename : str
+            name of the files belonging to this sequence.
+        mean_diff : np.array
+            Mean values of the difference image observations (can be used for
+            normalization)
+        mean_rgb :  np.array
+            Mean values of the rgb image observations (can be used for
+            normalization)
+        mode : str, optional
+            Flag to signal if the sequence is used for training or testing.
+            The default is 'train'.
+
+        Returns
+        -------
+        out : list
+            List with all generated examples.
+
+        """
         self.log.info(mode + ': ' + filename)
         out = []
         # load the txt file
         with open(filename + '_image1.txt', 'r') as f:
             tmp = np.loadtxt(f)
 
+        # read in position and orientation data
         xs = tmp[:, 11:12]
         ys = -tmp[:, 3:4]
         thetas = self._wrap_angle(-np.arctan2(-tmp[:, 8:9], tmp[:, 10:11]))
         vs = np.sqrt((ys[1:] - ys[:-1])**2 + (xs[1:] - xs[:-1])**2) / 0.103
         theta_dots = self._wrap_angle(thetas[1:] - thetas[:-1]) / 0.103
 
-        # read the images
-        ims = []
-        ims_m = []
-        im_diffs = []
-        im_diffs_m = []
-        im_files = [os.path.join(filename, 'image_2', fi)
-                    for fi in os.listdir(os.path.join(filename, 'image_2'))]
-        im_files = sorted(im_files)
-        i = Image.open(im_files[0])
-        p = np.asarray(i, 'float32')
-        for ind, f in enumerate(im_files[1:]):
-            i = Image.open(f)
-            i = np.asarray(i, 'float32')
-            im_diffs += [i - p]
-            im_diffs_m += [np.fliplr(i - p)]
-            ims += [i]
-            ims_m += [np.fliplr(i)]
-            p = np.copy(i)
+        # read the images from the first camera, create rgb and difference
+        # observations and mirrored versions of the observations
+        ims, ims_m, im_diffs, im_diffs_m = self._read_images(filename,
+                                                             'image_2')
         self.log.info('sequence length ' + str(len(ims)))
 
         # now ims and im_diffs start at t=1, but xs, ys, thetas, vs, and theta
@@ -218,72 +283,30 @@ class KittiDataset():
         # however, velocities and difference images are not aligned:
         # v[i] = p[i+1] = p[i] but im_diff[i] = im[i] - im[i-1]
         if mode == 'train':
-            # we extract 50 sequences of length 100 from each file, starting
-            # at different timesteps
-            inds = np.random.choice(len(ims) - 100, size=50, replace=False)
-            inds = list(inds)
-            shuffle(inds)
-            for i in inds:
-                vals = {}
-                vals['image'] = np.array(ims[i:i+100]).astype(np.float32)
-                vals['image_diff'] = \
-                    np.array(im_diffs[i:i+100]).astype(np.float32)
-                vals['state'] = \
-                    np.concatenate([xs[i:i+100], ys[i:i+100], thetas[i:i+100],
-                                    vs[i:i+100], theta_dots[i:i+100]], axis=1)
-                out += [vals]
-
+            out += self._get_subsequences(ims, im_diffs, xs, ys, thetas, vs,
+                                           theta_dots, 50, 100)
             # do the same again with the mirrored data
-            inds = np.random.choice(len(ims) - 100, size=50, replace=False)
-            inds = list(inds)
-            shuffle(inds)
-            for i in inds:
-                vals = {}
-                vals['image'] = np.array(ims_m[i:i+100]).astype(np.float32)
-                vals['image_diff'] = \
-                    np.array(im_diffs_m[i:i+100]).astype(np.float32)
-                vals['state'] = \
-                    np.concatenate([xs[i:i+100], -ys[i:i+100],
-                                    -thetas[i:i+100],
-                                    vs[i:i+100], -theta_dots[i:i+100]], axis=1)
-
-                out += [vals]
-
+            out += self._get_subsequences(ims_m, im_diffs_m, xs, -ys, -thetas,
+                                          vs, -theta_dots, 50, 100)
         elif mode == 'test':
             vals = {}
             # use the whole sequence
-            vals['image'] = np.array(ims).astype(np.float32)
-            vals['image_diff'] = np.array(im_diffs).astype(np.float32)
+            vals['image'] = np.array(ims)
+            vals['image_diff'] = np.array(im_diffs)
             vals['state'] = np.concatenate([xs, ys, thetas,
                                             vs, theta_dots], axis=1)
             out += [vals]
             # and the whole mirrored sequence
             vals = {}
-            vals['image'] = np.array(ims_m).astype(np.float32)
-            vals['image_diff'] = np.array(im_diffs_m).astype(np.float32)
+            vals['image'] = np.array(ims_m)
+            vals['image_diff'] = np.array(im_diffs_m)
             vals['state'] = np.concatenate([xs, -ys, -thetas,
                                             vs, -theta_dots], axis=1)
             out += [vals]
 
         # read the images from the second camera and repeat the process
-        ims = []
-        ims_m = []
-        im_diffs = []
-        im_diffs_m = []
-        im_files = [os.path.join(filename, 'image_3', fi)
-                    for fi in os.listdir(os.path.join(filename, 'image_3'))]
-        im_files = sorted(im_files)
-        i = Image.open(im_files[0])
-        p = np.asarray(i, 'float32')
-        for ind, f in enumerate(im_files[1:]):
-            i = Image.open(f)
-            i = np.asarray(i, 'float32')
-            im_diffs += [i - p]
-            im_diffs_m += [np.fliplr(i - p)]
-            ims += [i]
-            ims_m += [np.fliplr(i)]
-            p = np.copy(i)
-
+        ims, ims_m, im_diffs, im_diffs_m = self._read_images(filename,
+                                                             'image_3')
         # cut off the last entries for the images
         ims = ims[:-1]
         im_diffs = im_diffs[:-1]
@@ -292,74 +315,142 @@ class KittiDataset():
 
         assert len(ims) == len(xs) and len(ims) == len(vs)
 
-        # positions and velocities are now aligned such that
-        # p[i] + v[i] = p[i+1]
-        # however, velocities and difference images are not aligned:
-        # v[i] = p[i+1] = p[i] but im_diff[i] = im[i] - im[i-1]
         if mode == 'train':
-            # we extract 75 sequences of length 100 from each file, starting at
-            # 75 different timesteps
-            inds = np.random.choice(len(ims) - 100, size=50, replace=False)
-            inds = list(inds)
-            shuffle(inds)
-            for i in inds:
-                vals = {}
-                vals['image'] = np.array(ims[i:i+100]).astype(np.float32)
-                vals['image_diff'] = \
-                    np.array(im_diffs[i:i+100]).astype(np.float32)
-                vals['state'] = \
-                    np.concatenate([xs[i:i+100], ys[i:i+100], thetas[i:i+100],
-                                    vs[i:i+100], theta_dots[i:i+100]], axis=1)
-                out += [vals]
-
+            out += self._get_subsequences(ims, im_diffs, xs, ys, thetas, vs,
+                                           theta_dots, 50, 100)
             # do the same again with the mirrored data
-            inds = np.random.choice(len(ims) - 100, size=50, replace=False)
-            inds = list(inds)
-            shuffle(inds)
-            for i in inds:
-                vals = {}
-                vals['image'] = np.array(ims_m[i:i+100]).astype(np.float32)
-                vals['image_diff'] = \
-                    np.array(im_diffs_m[i:i+100]).astype(np.float32)
-                vals['state'] = \
-                    np.concatenate([xs[i:i+100], -ys[i:i+100],
-                                    -thetas[i:i+100],
-                                    vs[i:i+100], -theta_dots[i:i+100]], axis=1)
-
-                out += [vals]
-
+            out += self._get_subsequences(ims_m, im_diffs_m, xs, -ys, -thetas,
+                                          vs, -theta_dots, 50, 100)
         elif mode == 'test':
             vals = {}
             # use the whole sequence
-            vals['image'] = np.array(ims).astype(np.float32)
-            vals['image_diff'] = np.array(im_diffs).astype(np.float32)
+            vals['image'] = np.array(ims)
+            vals['image_diff'] = np.array(im_diffs)
             vals['state'] = np.concatenate([xs, ys, thetas,
                                             vs, theta_dots], axis=1)
             out += [vals]
             # and the whole mirrored sequence
             vals = {}
-            vals['image'] = np.array(ims_m).astype(np.float32)
-            vals['image_diff'] = np.array(im_diffs_m).astype(np.float32)
+            vals['image'] = np.array(ims_m)
+            vals['image_diff'] = np.array(im_diffs_m)
             vals['state'] = np.concatenate([xs, -ys, -thetas,
                                             vs, -theta_dots], axis=1)
             out += [vals]
 
         return out
 
+    def _read_images(filename, cam_key):
+        """
+        Reads in the images from the raw kitti data, creates the difference
+        images and encodes them as byte strings.
+        Also returns mirrired versions of each image for data augmentation
+
+        Parameters
+        ----------
+        filename : str
+            name of the files belonging to this sequence.
+        cam_key : str
+            Either image_2 or image_3 for images from the first or second
+            camera
+
+        Returns
+        -------
+        ims : list
+            The original rgb images
+        ims_m : list
+            The mirrored rgb images
+        im_diffs : list
+            The original difference images
+        im_diffs_m : list
+            The mirrored difference images
+
+        """
+        ims = []
+        ims_m = []
+        im_diffs = []
+        im_diffs_m = []
+        im_files = [os.path.join(filename, cam_key, fi)
+                    for fi in os.listdir(os.path.join(filename, cam_key))]
+        im_files = sorted(im_files)
+        i = Image.open(im_files[0])
+        p = np.asarray(i, 'float32')
+        for ind, f in enumerate(im_files[1:]):
+            i = Image.open(f)
+            i = np.asarray(i, 'float32')
+            diff = i - p
+            im = cv2.cvtColor(i, cv2.COLOR_RGB2BGR)
+            im = cv2.imencode('.png', im)[1].tobytes()
+            im_m = cv2.cvtColor(np.fliplr(i), cv2.COLOR_RGB2BGR)
+            im_m = cv2.imencode('.png', im_m)[1].tobytes()
+            d = cv2.cvtColor(diff, cv2.COLOR_RGB2BGR)
+            d = cv2.imencode('.png', d)[1].tobytes()
+            d_m = cv2.cvtColor(np.fliplr(diff), cv2.COLOR_RGB2BGR)
+            d_m = cv2.imencode('.png', d_m)[1].tobytes()
+
+            im_diffs += [d]
+            im_diffs_m += [d_m]
+            ims += [im]
+            ims_m += [im_m]
+            p = np.copy(i)
+        return ims, ims_m, im_diffs, im_diffs_m
+
+
+    def _get_subsequences(self, ims, im_diffs, xs, ys, thetas, vs, theta_dots,
+                          num, sl):
+        """
+        Extracts num sequences of length sl from each file, all starting
+        at different timesteps.
+
+        Parameters
+        ----------
+        ims : list
+            The full sequence of rgb images.
+        im_diffs : list
+            The full sequence of difference images
+        xs : list
+            The full sequence of positional x coordinates
+        ys : list
+            The full sequence of positional y-coordinates
+        thetas : list
+            The full sequence of headings.
+        vs : list
+            The full sequence of linear velocities
+        theta_dots : list
+            The full sequence of angular velocities
+        num : int
+            Number of subsequences to extract
+        sl : int
+            Length of the extracted subsequences
+
+        Returns
+        -------
+        out : list
+            List with data for all extracted subsequences.
+
+        """
+        inds = np.random.choice(len(ims) - sl, size=num, replace=False)
+        inds = list(inds)
+        shuffle(inds)
+        out = []
+        for i in inds:
+            vals = {}
+            vals['image'] = np.array(ims[i:i+sl])
+            vals['image_diff'] = \
+                np.array(im_diffs[i:i+sl])
+            vals['state'] = \
+                np.concatenate([xs[i:i+sl], ys[i:i+sl], thetas[i:i+sl],
+                                vs[i:i+sl], theta_dots[i:i+sl]], axis=1)
+            out += [vals]
+        return out
+
     def _wrap_angle(self, angle):
-        # return ((angle - np.pi) % (2 * np.pi)) - np.pi
-        if np.abs(angle) > 2 * np.pi:
-            angle = np.sign(angle) * np.abs(angle % 2 * np.pi)
-        if angle > np.pi:
-            angle -= 2 * np.pi
-        if angle < -np.pi:
-            angle += 2 * np.pi
-        return angle
+        return ((angle - np.pi) % (2 * np.pi)) - np.pi
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser('kitti dataset')
-    parser.add_argument('--name', dest='name', type=str, default='kitti')
+    parser = argparse.ArgumentParser('create kitti dataset')
+    parser.add_argument('--name', dest='name', type=str, default='kitti',
+                        help='the name of the created datasets')
     parser.add_argument('--out-dir', dest='out_dir', type=str, required=True,
                         help='where to store results')
     parser.add_argument('--source-dir', dest='source_dir', type=str,
@@ -387,7 +478,8 @@ def main(argv=None):
                              test_file,
                              args.name + '_' + str(i))
     else:
-        print(args.name + '_' + str(i), 'already exists')
+        print('A dataset with name, ', args.name + '_' + str(i),
+              'already exists at ', args.out_dir)
     return
 
 

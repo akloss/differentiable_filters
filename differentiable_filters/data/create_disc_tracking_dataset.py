@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Fri Mar  6 15:39:22 2020
-
-@author: akloss
+Script and class for creating a tf.Record dataset for the simulated disc
+tracking task
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
 
 import numpy as np
-from differentiable_filters.contexts import recordio as tfr
 import logging
 import os
 import cv2
@@ -19,20 +12,58 @@ import matplotlib.pyplot as plt
 import argparse
 import sys
 
+from differentiable_filters.utils import recordio as tfr
 
-class ToyExample():
-    def __init__(self, param):
-        self.im_size = param.width
-        self.out_dir = param.out_dir
-        self.name = param.name
-        self.num_examples = param.num_examples
-        self.sequence_length = param.sequence_length
-        self.file_size = min(self.num_examples, param.file_size)
-        self.debug = param.debug
 
+class DiscTrackingData():
+    def __init__(self, name, out_dir, width, num_examples, sequence_length,
+                 file_size, rescale=False, debug=False):
+        """
+        Class for creating a tf.Record dataset for the simulated disc tracking
+        task.
+
+        Parameters
+        ----------
+        name : str
+            Name of the dataset.
+        out_dir : str
+            Output directory
+        width : int
+            Width (and height) of the image observations. Note: Images are
+            always generated with size [120, 120, 3]. If width is set to
+            a different value, the images are rescaled accordingly.
+        num_examples : int
+            Maximum number of trainign examples to generate.
+        sequence_length : int
+            Number of timesteps in the sequence.
+        file_size : int
+            Maximum number of examples stored in one file.
+        rescale : bool, optional
+            If true, the state-space is rescaled to be in [-1, 1].
+            The default is False.
+        debug : bool, optional
+            Turns on debugging output. The default is False.
+
+        Returns
+        -------
+        None.
+
+        """
+        self.im_size = 120
+        self.factor = self.im_size / width
+        self.out_dir = out_dir
+        self.name = name
+        self.num_examples = num_examples
+        self.sequence_length = sequence_length
+        self.file_size = min(self.num_examples, file_size)
+        self.rescale = rescale
+        self.debug = debug
+
+        # parameters of the process model
         self.spring_force = 0.05
         self.drag_force = 0.0075
 
+        # colors for the distractor discs
         self.cols = [(0, 255, 0), (0, 0, 255), (0, 255, 255), (255, 0, 255),
                      (255, 255, 0), (255, 255, 255)]
 
@@ -40,7 +71,7 @@ class ToyExample():
             os.makedirs(self.out_dir)
 
         # setup logging
-        self.log = logging.getLogger(param.name)
+        self.log = logging.getLogger(name)
         self.log.setLevel(logging.DEBUG)
         # create formatter and add it to the handlers
         formatter = logging.Formatter('%(asctime)s: [%(name)s] ' +
@@ -63,12 +94,34 @@ class ToyExample():
         self.log.addHandler(fh)
 
     def create_dataset(self, num_distractors, hetero_q, corr_q, pos_noise):
-        # setup a debug directory
-        self.debug_dir = os.path.join(self.out_dir, 'debug', self.name)
-        if not os.path.exists(self.debug_dir):
-            os.makedirs(self.debug_dir)
+        """
+        Creates a tf.Record dataset with the desired characteristics.
 
-        mean_rgb = np.zeros(3)
+        Parameters
+        ----------
+        num_distractors : int
+            The number of distractor discs.
+        hetero_q : bool
+            If true, the process noise on the velecity components is
+            heteroscedastic.
+        corr_q : bool
+            If true, the process noise is correlated. In this case, the full
+            covariance matrix Q is stored, otherwise, we only store the
+            diagonal.
+        pos_noise : float
+            Magnitude of the process noise on the position components.
+
+        Returns
+        -------
+        None.
+
+        """
+        # setup directory for debug output if desired
+        if self.debug:
+            self.debug_dir = os.path.join(self.out_dir, 'debug', self.name)
+            if not os.path.exists(self.debug_dir):
+                os.makedirs(self.debug_dir)
+
         train_count = 0
         val_count = 0
         test_count = 0
@@ -96,20 +149,20 @@ class ToyExample():
             values = self._get_data(num_distractors, hetero_q, corr_q,
                                     pos_noise)
             self.ct += 1
-            mean_rgb += \
-                values['image'].mean(axis=0).mean(axis=0).mean(axis=0)
             for key in self.keys:
                 train_data[key] += [values[key]]
-            if len(train_data['image']) > self.file_size:
+            if len(train_data['image']) * 8 // 10 > self.file_size:
                 train_size, val_size, test_size = self._save(train_data)
                 train_count += train_size
                 val_count += val_size
                 test_count += test_size
                 train_data = {key: [] for key in self.keys}
 
-            if len(train_data['image']) % 250 == 0:
-                self.log.info('Done ' + str(len(train_data['image'])) +
-                              ' of ' + str(self.num_examples))
+            if (len(train_data['image']) * 8 / 10 + train_count) % 250 == 0:
+                num = len(train_data['image']) * 8 // 10 + train_count
+                self.log.info('Done ' + str(num) + ' of ' +
+                              str(self.num_examples))
+
         if len(train_data['image']) > 0:
             train_size, val_size, test_size = self._save(train_data)
             train_count += train_size
@@ -124,7 +177,6 @@ class ToyExample():
         fi.write('Num train: ' + str(train_count) + '\n')
         fi.write('Num val: ' + str(val_count) + '\n')
         fi.write('Num test: ' + str(test_count) + '\n')
-        fi.write('mean rgb: ' + str(mean_rgb / (count)) + '\n')
         fi.close()
 
         self.log.info('Done')
@@ -136,16 +188,39 @@ class ToyExample():
         return
 
     def _get_data(self, num_distractors, hetero_q, corr_q, pos_noise):
+        """
+        Generates one example.
+
+        Parameters
+        ----------
+        num_distractors : int
+            The number of distractor discs.
+        hetero_q : bool
+            If true, the process noise on the velecity components is
+            heteroscedastic.
+        corr_q : bool
+            If true, the process noise is correlated. In this case, the full
+            covariance matrix Q is stored, otherwise, we only store the
+            diagonal.
+        pos_noise : float
+            Magnitude of the process noise on the position components.
+
+        Returns
+        -------
+        example : dict
+            Dictionary containign the data
+
+        """
         states = []
         images = []
         qs = []
-        rs = []
+        viss = []
 
         # the state consists of the red disc's position and velocity
         # draw a random position
         pos = np.random.uniform(-self.im_size//2, self.im_size//2, size=(2))
         # draw a random velocity
-        vel = np.random.normal(loc=0, scale=1, size=(2)) * 3
+        vel = np.random.normal(loc=0., scale=1., size=(2)) * 3
         initial_state = np.array([pos[0], pos[1], vel[0], vel[1]])
 
         distractors = []
@@ -169,7 +244,7 @@ class ToyExample():
         for step in range(self.sequence_length):
             # get the next state
             state, q = self._process_model(last_state, hetero_q, corr_q,
-                                           pos_noise, True)
+                                           pos_noise)
             # also move the distractors
             new_distractors = []
             for d in distractors:
@@ -182,7 +257,7 @@ class ToyExample():
             states += [state]
             images += [im]
             qs += [q]
-            rs += [vis]
+            viss += [vis]
             distractors = new_distractors
             last_state = state
 
@@ -191,20 +266,63 @@ class ToyExample():
                 fig, ax = plt.subplots()
                 ax.set_axis_off()
                 ax.imshow(im)
+                ax.plot(states[i][0]+60, states[i][1]+60, 'bo')
+
+                if i + 1 < len(images):
+                    ax.plot(states[i+1][0]+60, states[i+1][1]+60, 'go')
+                    ax.plot([states[i][0]+60, states[i][0] + states[i][2]+60],
+                            [states[i][1]+60, states[i][1] + states[i][3]+60],
+                            'g')
+
                 fig.subplots_adjust(left=0.1, bottom=0.1, right=0.9, top=0.9,
                                     wspace=0.1, hspace=0.1)
 
                 fig.savefig(os.path.join(self.debug_dir, str(self.ct) +
-                                         "_tracking_" + str(i)),
+                                          "_tracking_" + str(i)),
                             bbox_inches="tight")
                 plt.close(fig)
 
+        # we found it helpful to rescale the state space to be roughly in
+        # [-1, 1]
+        if self.rescale:
+            initial_state /= self.im_size / 2
+            states = np.array(states) / (self.im_size / 2)
+            qs = np.array(qs) / (self.im_size / 2)
+            if corr_q:
+                qs /= self.im_size / 2.
+
+        # compress the images by encoding them as png byte-strings
+        for ind, im in enumerate(images):
+            im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
+            im = cv2.imencode('.png', im)[1].tobytes()
+            images[ind] = im
+        initial_im = cv2.cvtColor(initial_im, cv2.COLOR_RGB2BGR)
+        initial_im = cv2.imencode('.png', initial_im)[1].tobytes()
+
         return {'start_image': initial_im, 'start_state': initial_state,
-                'image': np.array(images), 'state': np.array(states),
-                'q': np.array(qs), 'visible': np.array(rs)}
+                'image': np.array(images), 'state': states,
+                'q': qs, 'visible': np.array(viss)}
 
     def _observation_model(self, state, distractors):
-        im = np.zeros((self.im_size, self.im_size, 3))
+        """
+        Generates an observation image for the current state.
+
+        Parameters
+        ----------
+        state : np.array
+            The state (position and velocity) of the target disc
+        distractors : list
+            List with the radius, state and color of each distractor disc
+
+        Returns
+        -------
+        im : np.array
+            The image data.
+        vis : float
+            The number of visible pixels of the target disc.
+
+        """
+        im = np.zeros((self.im_size, self.im_size, 3), dtype=np.uint8)
 
         # draw the red disc
         cv2.circle(im, (int(state[0]+self.im_size//2),
@@ -221,13 +339,40 @@ class ToyExample():
         mask = np.logical_and(im[:, :, 0] == 255,
                               np.logical_and(im[:, :, 1] == 0,
                                              im[:, :, 2] == 0))
+        vis = np.sum(mask.astype(np.float32))
 
-        vis = np.sum(mask)
-        im = im.astype(np.float32) / 255.
+        im = cv2.resize(im, (int(self.im_size/self.factor),
+                             int(self.im_size/self.factor)))
+        vis /= self.factor
+
         return im, vis
 
-    def _process_model(self, state, hetero_q, correlated, pos_noise,
-                       debug=False):
+    def _process_model(self, state, hetero_q, correlated, pos_noise):
+        """
+        Calculates the next state of the target disc.
+
+        Parameters
+        ----------
+        state : np.array
+            The state (position and velocity) of the target disc
+        hetero_q : bool
+            If true, the process noise on the velecity components is
+            heteroscedastic.
+        correlated : bool
+            If true, the process noise is correlated. In this case, the full
+            covariance matrix Q is stored, otherwise, we only store the
+            diagonal.
+        pos_noise : float
+            Magnitude of the process noise on the position components.
+
+        Returns
+        -------
+        new_state : np.array
+            The next state (position and velocity) of the target disc
+        q : np.array
+            The process noise used in this step
+
+        """
         new_state = np.copy(state)
         pull_force = - self.spring_force * state[:2]
         drag_force = - self.drag_force * state[2:]**2 * np.sign(state[2:])
@@ -284,6 +429,25 @@ class ToyExample():
         return new_state, q
 
     def _save(self, data):
+        """
+        Save a portion of the data to file and splits it into training,
+        validation and test data
+
+        Parameters
+        ----------
+        data : dict of lists
+            A dictionary containing the example data
+
+        Returns
+        -------
+        train_size : int
+            Number of training examples saved
+        val_size : int
+            Number of validation examples saved.
+        test_size : int
+            Number of test examples saved.
+
+        """
         length = len(data['image'])
         # convert lists to numpy arrays
         for key in self.keys:
@@ -328,10 +492,11 @@ class ToyExample():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser('toy datset')
-    parser.add_argument('--name', dest='name', type=str, default='toy')
+    parser = argparse.ArgumentParser('create disc tracking datset')
     parser.add_argument('--out-dir', dest='out_dir', type=str, required=True,
                         help='where to store results')
+    parser.add_argument('--name', dest='name', type=str,
+                        default='disc_tracking')
     parser.add_argument('--sequence-length', dest='sequence_length', type=int,
                         default=50, help='length of the generated sequences')
     parser.add_argument('--width', dest='width', type=int, default=120,
@@ -341,8 +506,7 @@ def main(argv=None):
                         help='how many training examples should be generated')
     parser.add_argument('--file-size', dest='file_size', type=int,
                         default=500,
-                        help='how many examples per file should be saved in ' +
-                        'one record')
+                        help='how many examples should be saved in one file')
     parser.add_argument('--hetero-q', dest='hetero_q', type=int,
                         default=0, choices=[0, 1],
                         help='if the process noise should be heteroscedastic '
@@ -356,6 +520,9 @@ def main(argv=None):
                         help='sigma for the positional process noise')
     parser.add_argument('--num-distractors', dest='num_distractors', type=int,
                         default=5, help='number of distractor disc')
+    parser.add_argument('--rescale', dest='rescale', type=int,
+                        default=0, choices=[0, 1],
+                        help='Rescale the state space to be roughly in [-1, 1]?')
     parser.add_argument('--debug', dest='debug', type=int,
                         default=0, choices=[0, 1],
                         help='Write out images for three sequences as debug ' +
@@ -372,15 +539,13 @@ def main(argv=None):
     else:
         name += '_const'
 
-    args.name = name
-
-    if not os.path.exists(os.path.join(args.out_dir,
-                                       'info_' + args.name + '.txt')):
-        c = ToyExample(args)
+    if not os.path.exists(os.path.join(args.out_dir, 'info_' + name + '.txt')):
+        c = DiscTrackingData(name, args.out_dir, args.width, args.num_examples,
+                             args.sequence_length, args.file_size, args.debug)
         c.create_dataset(args.num_distractors, args.hetero_q,
                          args.correlated_q, args.pos_noise)
     else:
-        print('name already exists')
+        print('A dataset with this name already exists at ' + args.out_dir)
 
 
 if __name__ == "__main__":

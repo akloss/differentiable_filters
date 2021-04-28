@@ -1,22 +1,17 @@
-# -*- coding: utf-8 -*-
 """
-Created on Tue Mar  3 12:56:47 2020
-
-@author: akloss
+Filtering with LSTM models.
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
 import numpy as np
 from differentiable_filters.filters import filter_cell_base as base
-from differentiable_filters.contexts import base_layer as base2
+from differentiable_filters.utils import base_layer as base2
+import differentiable_filters.utils.tensorflow_compatability as compat
 
 
 class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
-    def __init__(self, param, context):
+    def __init__(self, context, problem, lstm_structure, num_units,
+                 update_rate=1, debug=False):
         """
         Filtering with LSTM models. Depending on the class, the cell contains
         one or two layers of LSTM cells followed by fully connected layers that
@@ -24,17 +19,29 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
 
         Parameters
         ----------
-        param : dict
-            parmaters
         context : tf.keras.Model
             A context class that implements all functions that are specific to
             the filtering problem (e.g. process and observation model)
+        problem : str
+            A string identifyer for the problem defined by the context
+        lstm_structure : str
+            String coding for the desired structure of the LSTM, either lstm1
+            (for one lstm layer) or lstm2 (for two LSTM layers).
+        num_units : int
+            The number of units in the LSTM layers
+        update_rate : int, optional
+            The rate at which observations come in (allows simulating lower
+            observation rates). Default is 1
+        debug : bool, optional
+            If true, the filters will print out information at each step.
+            Default is False.
         """
-        base.FilterCellBase.__init__(self, param, context)
+        base.FilterCellBase.__init__(self, context, problem, update_rate,
+                                     debug)
         base2.BaseLayer.__init__(self)
 
-        self.structure = self.param['lstm_structure']
-        self.num_units = self.param['num_units']
+        self.structure = lstm_structure
+        self.num_units = num_units
 
         if self.structure == 'lstm2':
             self.lstm1 = tf.keras.layers.LSTMCell(self.num_units)
@@ -45,7 +52,7 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
             self.lstm1 = tf.keras.layers.LSTMCell(self.num_units)
             self.filter_layers = [self.lstm1]
 
-        if self.param['problem'] == 'pushing':
+        if self.problem == 'pushing':
             self.pos_c1 = self._conv_layer('pos_c1', 5, 16,
                                            stride=[2, 2])
             self.pos_c2 = self._conv_layer('pos_c2', 3, 32)
@@ -67,8 +74,8 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
         self.decoder_fc3 = self._fc_layer('decoder_fc3', self.dim_x + num,
                                           activation=None)
 
-        init_const = np.ones(self.dim_x) * 1e-2/self.context.scale**2
-        init = np.ones(self.dim_x)/self.context.scale**2
+        init_const = np.ones(self.dim_x) * 1e-2/self.scale**2
+        init = np.ones(self.dim_x)/self.scale**2
         self.covar_init_bias = \
             self.add_weight(name='covar_init_bias',
                             shape=[self.dim_x], trainable=True,
@@ -148,9 +155,9 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
 
             # preprocess the raw observations
             z, encoded_observations = \
-                self.context.sensor_model(raw_observations, training)
+                self.context.run_sensor_model(raw_observations, training)
 
-            if self.param['problem'] == 'pushing':
+            if self.problem == 'pushing':
                 mask, rot_encoding, glimpse_encoding, _ = encoded_observations
 
                 # preprocess the encodings
@@ -250,7 +257,7 @@ class UnstructuredCell(base.FilterCellBase, base2.BaseLayer):
             if self.context.param['problem'] == 'kitti':
                 out_state = state_old + out_state
             out_state = self.context.correct_state(out_state, diff=False)
-            out_covar = tf.contrib.distributions.fill_triangular(out_covar)
+            out_covar = compat.fill_triangular(out_covar)
             out_covar += tf.linalg.diag(self.covar_init_bias)
             out_covar = tf.matmul(out_covar,
                                   tf.linalg.matrix_transpose(out_covar))

@@ -1,28 +1,31 @@
-# -*- coding: utf-8 -*-
 """
-Created on Thu Mar 12 10:51:37 2020
-
-@author: akloss
+Abstract base class for Filter Cells
 """
-from __future__ import absolute_import, division
-from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
 import numpy as np
+import differentiable_filters.utils.tensorflow_compatability as compat
 
 
 class FilterCellBase(tf.keras.layers.AbstractRNNCell):
-    def __init__(self, param, context):
+    def __init__(self, context, problem, update_rate=1, debug=False):
         """
         Abstract base class for Filter Cells
 
         Parameters
         ----------
-        param : dict
-            parmaters
         context : tf.keras.Model
             A context class that implements all functions that are specific to
             the filtering problem (e.g. process and observation model)
+        problem : str
+            A string identifyer for the problem defined by the context
+        update_rate : int, optional
+            The rate at which observations come in (allows simulating lower
+            observation rates). Default is 1
+        debug : bool, optional
+            If true, the filters will print out information at each step.
+            Default is False.
+
 
         Returns
         -------
@@ -31,37 +34,23 @@ class FilterCellBase(tf.keras.layers.AbstractRNNCell):
         """
         tf.keras.layers.AbstractRNNCell.__init__(self)
         self.context = context
-        self.param = param
+        self.problem = problem
 
-        self.epoch_size = None
-        self.debug = param['debug']
+        if hasattr(self.context, 'scale'):
+            self.scale = self.context.scale
+        else:
+            self.scale = 1
 
-        # shape  related information
-        self.batch_size = param['batch_size']
-        self.sequence_length = param['sequence_length']
+        self.debug = debug
+
+        # shape related information
+        self.batch_size = self.context.batch_size
         self.dim_x = self.context.dim_x
         self.dim_z = self.context.dim_z
         self.dim_u = self.context.dim_u
 
-        # define if process noise q and observation noise r should be learned
-        # and if the noise should be heteroscedastic (state and action
-        # dependent) or constant
-        self.learn_q = param['learn_q']
-        self.learn_r = param['learn_r']
-        self.hetero_q = param['hetero_q']
-        self.hetero_r = param['hetero_r']
-
-        # learned or analytical process model
-        self.learn_process = param['learn_process']
-
-        # diagonal or full covariance matrices
-        self.diagonal_covar = param['diagonal_covar']
-
-        # define if the initial state should be perturbed randomly
-        self.add_initial_noise = param['add_initial_noise']
-
         # rate at which observations are taken into account
-        self.update_rate = tf.ones([], dtype=tf.float32) * param['update_rate']
+        self.update_rate = tf.ones([], dtype=tf.float32) * update_rate
 
         self.filter_layers = []
 
@@ -176,18 +165,18 @@ class FilterCellBase(tf.keras.layers.AbstractRNNCell):
         """
         # eliminate nans and infs (replace them with high values on the
         # diagonal and zeros else)
-        bs = covar.get_shape()[0].value
-        dim = covar.get_shape()[-1].value
+        bs = compat.get_dim_int(covar, 0)  # covar.get_shape()[0]
+        dim = compat.get_dim_int(covar, -1)  # covar.get_shape()[-1]
         covar = tf.where(tf.math.is_finite(covar), covar,
-                         tf.eye(dim, batch_shape=[bs])*1e5)
+                         tf.eye(dim, batch_shape=[bs])*1e6)
 
         # make symmetric
         covar = (covar + tf.linalg.matrix_transpose(covar)) / 2.
 
-        # add a bit of noise to the diagonal of c to prevent
+        # add a bit of noise to the diagonal of covar to prevent
         # nans in the gradient of the svd
         noise = tf.random.uniform(covar.get_shape().as_list()[:-1], minval=0,
-                                  maxval=0.001/self.context.scale**2)
+                                  maxval=0.001/self.scale**2)
         s, u, v = tf.linalg.svd(covar + tf.linalg.diag(noise))
         # test if the matrix is invertible
         invertible = self._is_invertible(s)
@@ -195,16 +184,16 @@ class FilterCellBase(tf.keras.layers.AbstractRNNCell):
         pd = tf.reduce_all(tf.greater(s, 0), axis=-1)
 
         # try making a valid version of the covariance matrix by ensuring that
-        # the minimum eigenvalue is at least 1e-4/self.context.scale
+        # the minimum eigenvalue is at least 1e-4/self.scale
         min_eig = s[..., -1:]
-        eps = tf.tile(tf.maximum(1e-4/self.context.scale - min_eig, 0),
-                      [1, s.get_shape()[-1]])
+        eps = tf.tile(tf.maximum(1e-4/self.scale - min_eig, 0),
+                      [1, compat.get_dim_int(s, -1)])
         covar_invertible = tf.matmul(u, tf.matmul(tf.linalg.diag(s + eps), v,
                                                   adjoint_b=True))
 
         # if the covariance matrix is valid, leave it as is, else replace with
         # the modified variant
-        covar_valid = tf.where(tf.logical_and(invertible, pd),
+        covar_valid = tf.where(tf.logical_and(invertible, pd)[:, None, None],
                                covar, covar_invertible)
 
         # make symmetric again
@@ -229,12 +218,12 @@ class FilterCellBase(tf.keras.layers.AbstractRNNCell):
 
         """
         # input tensor is [batch_size, num_samples, dim_x]
-        num = data.get_shape()[1]
+        num = compat.get_dim_int(data, 1)
 
         data = tf.cast(data, tf.float64)
 
         # center the samples
-        mean = tf.reduce_mean(data, axis=1, keep_dims=True)
+        mean = tf.reduce_mean(data, axis=1, keepdims=True)
         centered = data - tf.tile(mean, [1, num, 1])
 
         # whiten
@@ -245,7 +234,7 @@ class FilterCellBase(tf.keras.layers.AbstractRNNCell):
         sigma = tf.reduce_mean(diff_square, axis=1)
         # get the whitening matrix
         # s: [batch_size, dim_x], u: [batch_size, dim_x, dim_x]
-        s, u, _ = tf.svd(sigma, full_matrices=True)
+        s, u, _ = tf.linalg.svd(sigma, full_matrices=True)
         s_inv = 1. / tf.sqrt(s + 1e-5)
         s_inv = tf.linalg.diag(s_inv)
         # w: [batch_size, dim_x, dim_x]

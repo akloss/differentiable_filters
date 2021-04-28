@@ -1,45 +1,62 @@
-# -*- coding: utf-8 -*-
 """
-Created on Tue Mar  3 12:56:47 2020
-
-@author: akloss
+RNN cell implementing a Differentiable Particle Filter
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
 from differentiable_filters.filters import filter_cell_base as base
+import differentiable_filters.utils.tensorflow_compatability as compat
 
 
 class PFCell(base.FilterCellBase):
-    def __init__(self, param, context):
+    def __init__(self, context, problem, num_samples=500,
+                 learned_likelihood=False,
+                 resample_rate=1, alpha=0, update_rate=1, debug=False):
         """
         RNN cell implementing a Differentiable Particle Filter
 
         Parameters
         ----------
-        param : dict
-            parmaters
         context : tf.keras.Model
             A context class that implements all functions that are specific to
             the filtering problem (e.g. process and observation model)
+        problem : str
+            A string identifyer for the problem defined by the context
+        num_samples : int, optional
+            The number of particles used. Default is 500.
+        learned_likelihood : bool, optional
+            If true, the observation likelihood is computed with a learned
+            neural network. Else, an analytical Gaussian based on the
+            observation noise is used. Default is False.
+        resample_rate : int, optional
+            Defines how often the particles are resampled. Default is 1, i.e.
+            resampling after every step.
+        alpha : float, optional
+            Soft resampling parameter, see
+            "Particle Filter Networks with Application to Visual Localization,
+             Peter Karkus, David Hsu, Wee Sun Lee, 2018"
+            Default is 0, i.e. no soft resampling.
+        update_rate : int, optional
+            The rate at which observations come in (allows simulating lower
+            observation rates). Default is 1
+        debug : bool, optional
+            If true, the filters will print out information at each step.
+            Default is False.
         """
-        base.FilterCellBase.__init__(self, param, context)
+        base.FilterCellBase.__init__(self, context, problem,
+                                     update_rate, debug)
 
         # number of particles to sample
-        self.num_particles = param['num_samples']
+        self.num_particles = num_samples
         # use a learned or an analytical gaussian likelihood for observations
-        self.learned_likelihood = param['learned_likelihood']
+        self.learned_likelihood = learned_likelihood
 
         # resample every x steps
-        self.resample_rate = param['resample_rate']
+        self.resample_rate = resample_rate
 
         # proportion of uniform resampling
-        self.alpha = float(param['alpha'])
+        self.alpha = alpha
 
         # for sampling noise in the process model (= drawing new particles
         # from the distribution of the next state)
@@ -144,15 +161,14 @@ class PFCell(base.FilterCellBase):
             weights_old = tf.reshape(weights_old,
                                      [self.batch_size, self.num_particles])
 
+            print_ops = []
             if self.debug:
-                particles_old = tf.Print(particles_old, [tf.squeeze(step)],
-                                         message='--------------- \n step \n ')
-                particles_old = tf.Print(particles_old, [particles_old],
-                                         summarize=1000,
-                                         message='particles old \n')
-                particles_old = tf.Print(particles_old, [weights_old],
-                                         summarize=1000,
-                                         message='weights old \n')
+                print_ops += [tf.print('------------------- \n step \n ',
+                                       tf.squeeze(step))]
+                print_ops += [tf.print('particles old: ', particles_old[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('weights: ', weights_old[0],
+                                       summarize=-1)]
 
             ###################################################################
             # resample if desired
@@ -171,27 +187,18 @@ class PFCell(base.FilterCellBase):
                         lambda: particles_re, lambda: particles_old)
 
             if self.debug:
-                particles_re = tf.Print(particles_re, [particles_re],
-                                        summarize=1000,
-                                        message='particles resampled\n')
-                particles_re = tf.Print(particles_re, [weights_re],
-                                        summarize=1000,
-                                        message='weights resampled\n')
-                particles_re = tf.Print(particles_re, [actions],
-                                        summarize=1000,
-                                        message='actions\n')
+                print_ops += [tf.print('particles resampled: ',
+                                       particles_re[0], summarize=-1)]
+                print_ops += [tf.print('weights resamples: ', weights_re[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('actions: ', actions[0], summarize=-1)]
 
             ###################################################################
             # preproess the raw observations
-            z, encoding = self.context.sensor_model(raw_observations, training)
+            z, encoding = self.context.run_sensor_model(raw_observations,
+                                                        training)
 
-            if self.learn_r:
-                R = self.context.observation_noise(
-                    encoding, hetero=self.hetero_r,
-                    diag=self.diagonal_covar, training=training)
-            else:
-                R = tf.tile(self.context.R[None, :, :],
-                            [self.batch_size, 1, 1])
+            R = self.context.get_observation_noise(encoding, training=training)
 
             ###################################################################
             # predict the next state for each particle
@@ -200,19 +207,16 @@ class PFCell(base.FilterCellBase):
                                       training=training)
 
             if self.debug:
-                particles_pred = tf.Print(particles_pred, [particles_pred],
-                                          summarize=1000,
-                                          message='particles pred\n')
-                particles_pred = tf.Print(particles_pred, [Q],
-                                          summarize=1000, message='Q\n')
-                particles_pred = tf.Print(particles_pred, [R],
-                                          summarize=1000, message='R\n')
+                print_ops += [tf.print('Q: ', Q[0], summarize=-1)]
+                print_ops += [tf.print('R: ', R[0], summarize=-1)]
+                print_ops += [tf.print('particles pred: ',
+                                       particles_pred[0], summarize=-1)]
 
             ###################################################################
             # update the particle weights according to the observations
             weights_updated = \
                 self._observation_update(particles_pred, weights_re, z, R,
-                                         encoding, training)
+                                         encoding, training, print_ops)
             # this lets us emulate not getting observations at every step
             weights_new = \
                 tf.cond(tf.equal(tf.math.mod(step[0, 0],
@@ -220,8 +224,8 @@ class PFCell(base.FilterCellBase):
                         lambda: weights_updated, lambda: weights_re)
 
             if self.debug:
-                weights_new = tf.Print(weights_new, [weights_new],
-                                       summarize=1000, message='weights up\n')
+                print_ops += [tf.print('updated weights: ',
+                                       weights_updated[0], summarize=-1)]
 
             ###################################################################
             # estimate the mean state
@@ -229,24 +233,30 @@ class PFCell(base.FilterCellBase):
                                                         weights_new)
 
             if self.debug:
-                mean_covar = tf.Print(mean_covar, [mean_state],
-                                      summarize=1000, message='mean state\n')
-                mean_covar = tf.Print(mean_covar, [mean_covar],
-                                      summarize=1000, message='mean covar\n')
+                print_ops += [tf.print('mean state: ', mean_state[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('covariance: ', mean_covar[0],
+                                       summarize=-1)]
 
-            # the recurrent state contains the updated particles and weights
-            new_state = (tf.reshape(particles_pred, [self.batch_size, -1]),
-                         tf.reshape(weights_new, [self.batch_size, -1]),
-                         step + 1)
+            # now flatten the tensors again for output
+            # the control_dependency statement ensures that the debug print
+            # operations are executed in tf1. graph mode as well
+            with tf.control_dependencies(print_ops):
+                particles_pred = tf.reshape(particles_pred,
+                                            [self.batch_size, -1])
+                weights_new = tf.reshape(weights_new, [self.batch_size, -1])
+
+            # the recurrent state contains the updated state estimate
+            new_state = (particles_pred, weights_new, step + 1)
 
             # we can output additional output, but it also makes sense to add
             # the predicted state here again to have access to the full
             # sequence of states after running the network
-            output = (tf.reshape(particles_pred, [self.batch_size, -1]),
-                      tf.reshape(weights_new, [self.batch_size, -1]),
+            output = (particles_pred,
+                      weights_new,
                       mean_state,
                       tf.reshape(mean_covar, [self.batch_size, self.dim_x**2]),
-                      tf.reshape(z, [self.batch_size, -1]),
+                      z,
                       tf.reshape(R, [self.batch_size, -1]),
                       tf.reshape(Q, [self.batch_size, -1]))
 
@@ -282,20 +292,12 @@ class PFCell(base.FilterCellBase):
         actions = tf.reshape(actions, [-1, 2])
 
         particles_pred, _ = \
-            self.context.process_model(particles_old, actions,
-                                       self.learn_process, training)
+            self.context.run_process_model(particles_old, actions, training)
 
         # get the process noise
-        # must be defined via a FilterContext
-        if self.learn_q:
-            Q = self.context.process_noise(
-                particles_old, actions, learned=self.learn_process,
-                hetero=self.hetero_q, diag=self.diagonal_covar,
-                training=training)
-        else:
-            Q = tf.tile(self.context.Q[None, :, :], [self.batch_size, 1, 1])
-        # Q = self._make_valid(Q)
-        if self.learn_q and self.hetero_q:
+        Q = self.context.get_process_noise(particles_old, actions, training)
+
+        if compat.get_dim_int(Q, 0) > self.batch_size:
             Q = tf.reshape(Q, [self.batch_size, self.num_particles, self.dim_x,
                                self.dim_x])
 
@@ -316,7 +318,7 @@ class PFCell(base.FilterCellBase):
                                    self.dim_x, 1])
 
         scale = tf.linalg.sqrtm(tf.cast(Q, tf.float64))
-        if not (self.learn_q and self.hetero_q):
+        if len(scale.get_shape()) == 3:
             # when using heteroscedastic noise, we get one Q per particle, but
             # with constant noise, we only get one Q for all particles in the
             # batch
@@ -337,7 +339,7 @@ class PFCell(base.FilterCellBase):
 
         # when we use heteroscedastic noise, we get one Q per particle, so
         # we output the weighted mean
-        if self.learn_q and self.hetero_q:
+        if len(Q.get_shape()) == 4:
             # weights are in log scale, to turn them into a distribution, we
             # exponentiate and normalize them == apply the softmax transform
             weights_dist = tf.nn.softmax(weights_old, axis=-1)
@@ -347,7 +349,7 @@ class PFCell(base.FilterCellBase):
         return particles_pred, Q
 
     def _observation_update(self, particles_pred, weights_old, z, R, encoding,
-                            training):
+                            training, print_ops):
         """
         Update step of the PF
 
@@ -378,21 +380,21 @@ class PFCell(base.FilterCellBase):
         """
         # get the predicted observation for each particle
         zs_pred, _ = \
-            self.context.observation_model(tf.reshape(particles_pred,
-                                                      [-1, self.dim_x]),
-                                           training=training)
+            self.context.run_observation_model(tf.reshape(particles_pred,
+                                                          [-1, self.dim_x]),
+                                               training=training)
         # restore the particle dimension
         zs_pred = tf.reshape(zs_pred, [self.batch_size, -1, self.dim_z])
 
         if self.debug:
-            zs_pred = tf.Print(zs_pred, [zs_pred], summarize=1000,
-                               message='z pred\n')
-            zs_pred = tf.Print(zs_pred, [z], summarize=1000, message='z\n')
+            print_ops += [tf.print('predicted per particle zs: ', zs_pred,
+                                   summarize=-1)]
+            print_ops += [tf.print('real z: ', z, summarize=-1)]
 
         if self.learned_likelihood:
             # train a neural network to output a likelihood per particle
-            like = self.context.likelihood(zs_pred, encoding,
-                                           training=training)
+            like = self.context.get_observation_likelihood(zs_pred, encoding,
+                                                           training=training)
             like = tf.reshape(like, weights_old.get_shape())
 
             like = tf.where(tf.greater_equal(like, -20), like,
@@ -406,7 +408,7 @@ class PFCell(base.FilterCellBase):
             diff = tf.expand_dims(diff, axis=-1)
 
             diff = tf.where(tf.math.is_finite(diff), diff,
-                            tf.ones_like(diff)*1e5/self.context.scale)
+                            tf.ones_like(diff)*1e5)
 
             R = tf.tile(R[:, None, :, :], [1, self.num_particles, 1, 1])
             inv = tf.linalg.inv(R)
@@ -429,8 +431,9 @@ class PFCell(base.FilterCellBase):
             # this shift is automatically undone when we take the softmax of
             # the weights
             max_like = tf.reduce_max(like, axis=-1, keepdims=True)
-            bias = tf.maximum(tf.log(1/float(self.num_particles)) - max_like,
-                              0) * tf.ones_like(max_like)
+            bias = \
+                tf.maximum(tf.math.log(1/float(self.num_particles)) - max_like,
+                           0) * tf.ones_like(max_like)
             bias = tf.tile(bias, [1, self.num_particles])
             like += bias
 
@@ -566,7 +569,7 @@ class PFCell(base.FilterCellBase):
 
         # remove nans and infs and replace them with high values
         mean_diff = tf.where(tf.math.is_finite(mean_diff), mean_diff,
-                             tf.ones_like(mean_diff)*1e3/self.context.scale)
+                             tf.ones_like(mean_diff)*1e3)
 
         # batch_size, dim_x, dim_x
         cov = tf.matmul(mean_diff[:, :, :, None], mean_diff[:, :, None, :])
@@ -577,7 +580,7 @@ class PFCell(base.FilterCellBase):
         mean_covar = tf.cast(mean_covar, tf.float32)
         mean_covar = self._make_valid(mean_covar)
 
-        if self.param['problem'] == 'pushing':
+        if self.problem == 'pushing':
             # for the circular object, the orientation is always zero, leading
             # to 0 variance between particles and thus a degenerate covariance
             # matrix

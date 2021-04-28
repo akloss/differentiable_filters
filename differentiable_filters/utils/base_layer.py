@@ -1,13 +1,9 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Tue Nov  3 16:42:19 2020
-
-@author: akloss
+A base class providing
+    - wrappers around some tensorflow layers to set default arguments
+    - a function to compute jacobians
+    - a spatial-softmax layer
 """
-
-from __future__ import absolute_import, division
-from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
 

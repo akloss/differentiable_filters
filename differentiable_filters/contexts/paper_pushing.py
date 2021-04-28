@@ -1,14 +1,12 @@
-# -*- coding: utf-8 -*-
 """
-Created on Thu Mar 12 09:04:00 2020
-
-@author: akloss
+Context class for the pushing task as used in the paper
+"How to Train Your Differentiable Filter".
 """
 
-from __future__ import absolute_import, division
-from __future__ import print_function, unicode_literals
+# this code only works with tensorflow 1
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
-import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
 import os
@@ -18,16 +16,30 @@ from matplotlib.patches import Polygon
 import matplotlib.pyplot as plt
 import pickle
 
+from differentiable_filters.contexts import paper_base_context as base
+from differentiable_filters.utils.base_layer import BaseLayer
+from differentiable_filters.utils import recordio as tfr
+from differentiable_filters.utils import push_utils as utils
+from differentiable_filters.utils import tensorflow_compatability as compat
 
-from differentiable_filters.contexts import base_context as base
-from differentiable_filters.contexts.base_layer import BaseLayer
-from differentiable_filters.contexts import recordio as tfr
-from differentiable_filters.contexts import push_utils as utils
 
-
-class Context(base.BaseContext):
+class Context(base.PaperaseContext):
     def __init__(self, param, mode):
-        base.BaseContext.__init__(self, param, mode)
+        """
+        Context class for the pushing task as used in the paper.
+
+        Parameters
+        ----------
+        param : dict
+            A dictionary of arguments
+        mode : string
+            determines which parts of the model are trained. Use "filter" for
+            the whole model, "pretrain_obs" for pretraining the observation
+            related functions of the context in isolation or "pretrain_proc"
+            for pretrainign the process-related functions of the context.
+
+        """
+        base.PaperBaseContext.__init__(self, param, mode)
 
         if 'normalize' in param.keys():
             self.normalize = param['normalize']
@@ -44,29 +56,12 @@ class Context(base.BaseContext):
                         's']
         self.z_names = ['x', 'y', 'theta', 'rx', 'ry', 'nx', 'ny', 's']
 
-        self.sl = param['sequence_length']
-        self.scale = param['scale']
-
         # load the points on the outline of the butter object for visualization
         path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         with open(os.path.join(path, 'resources',
                                'butter_points.pkl'), 'rb') as bf:
             butter_points = pickle.load(bf)
         self.butter_points = np.array(butter_points)
-
-        # for state in mm/deg,
-        # c = np.array([50, 50, 1e-2, 5, 5, 50, 50, 0.5, 0.5, 0.5])
-        self.noise_list = \
-            [np.array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]),
-             np.array([49.8394116, -2.3510439, 0, 2.5196417, 1.93745247,
-                       27.6656989, 67.1287098, 0.03124815, -0.18917632,
-                       -0.14730855]),
-             np.array([27.9914853, -30.3366791, 0, -4.6963326, -2.96631439,
-                       3.6698755, -14.5376077, -0.49956926, 0.56362964,
-                       0.54478971])]
-
-        for i, n in enumerate(self.noise_list):
-            self.noise_list[i] = n.astype(np.float32)
 
         # define initial values for the process noise q and observation noise r
         # diagonals
@@ -94,6 +89,20 @@ class Context(base.BaseContext):
         self.Q = tf.convert_to_tensor(q, dtype=tf.float32)
         r = np.diag(np.square(self.r_diag))
         self.R = tf.convert_to_tensor(r, dtype=tf.float32)
+
+        # for state in mm/deg,
+        # c = np.array([50, 50, 1e-2, 5, 5, 50, 50, 0.5, 0.5, 0.5])
+        self.noise_list = \
+            [np.array([0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]),
+             np.array([49.8394116, -2.3510439, 0, 2.5196417, 1.93745247,
+                       27.6656989, 67.1287098, 0.03124815, -0.18917632,
+                       -0.14730855]),
+             np.array([27.9914853, -30.3366791, 0, -4.6963326, -2.96631439,
+                       3.6698755, -14.5376077, -0.49956926, 0.56362964,
+                       0.54478971])]
+
+        for i, n in enumerate(self.noise_list):
+            self.noise_list[i] = n.astype(np.float32)
 
         if mode == 'filter':
             train_sensor_model = param['train_sensor_model']
@@ -280,7 +289,7 @@ class Context(base.BaseContext):
     ###########################################################################
     # observation models
     ###########################################################################
-    def sensor_model(self, raw_observations, training):
+    def run_sensor_model(self, raw_observations, training):
         """
         Process raw observations and return an encoding and
         predicted observations z for the filter
@@ -294,7 +303,7 @@ class Context(base.BaseContext):
         enc = list(enc) + [pix]
         return z, enc
 
-    def process_model(self, old_state, action, learned, training):
+    def run_process_model(self, old_state, action, learned, training):
         """
         Predict the next state from the old state and the action and returns
         the jacobian
@@ -1167,772 +1176,21 @@ class Context(base.BaseContext):
 
         record_meta = tfr.RecordMeta.load(path, name + '_' + data_mode + '_')
 
-        def _parse_function_obs_train(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            pose = features['pos']
-            ori = self._adapt_orientation(pose[:, 3:]*(180.0/np.pi),
-                                          features['object'], 1)
-            pose = tf.concat([pose[:, 0:1]*1000/self.scale,
-                              pose[:, 1:2]*1000/self.scale,
-                              ori/self.scale], axis=1)
-            n = tf.squeeze(features['normal'])/self.scale
-            con = tf.cast(features['contact'], tf.float32)
-            con = tf.reshape(con, [-1, 1])/self.scale
-            tips = features['tip']
-            cp = features['contact_point'][:, :2]*1000
-            con_norm = tf.linalg.norm(cp, axis=-1)
-            cp = tf.where(tf.less(con_norm, 1e-6),
-                          tips[:, :2]*1000, cp)/self.scale
-            pix_tip = features['pix_tip']
-
-            im = features['image']
-            coord = features['coord']
-            mask = features['segmentation']
-            mask = tf.cast(tf.where(tf.greater(mask, 2.5), tf.ones_like(mask),
-                                    tf.zeros_like(mask)), tf.float32)
-            vis = tf.reduce_sum(mask, axis=[1, 2, 3])
-
-            seq_len = im.get_shape()[0].value
-            im = tf.concat([im, coord], axis=-1)
-            pix = features['pix_pos'][:, :2]
-            ob = tf.reshape(features['object'], [1])
-            mat = tf.reshape(features['material'], [1])
-
-            # we use several steps of the sequence
-            start_inds = np.random.randint(2, seq_len-2, 5)
-            num = len(start_inds)
-            self.train_multiplier = num
-
-            # prepare the lists of output tensors
-            ims = []
-            start_ims = []
-            start_ts = []
-            tes = []
-            labels = []
-            good_zs = []
-            bad_zs = []
-            viss = []
-            pixs = []
-            pixts = []
-            pixte = []
-            start_pixs = []
-            segs = []
-            start_segs = []
-            for si in start_inds:
-                ref = np.random.randint(1, si)
-                start_ts += [tips[ref]]
-                start_ims += [im[ref]]
-                start_pixs += [pix[ref]]
-                start_segs += [mask[ref]]
-
-                viss += [vis[si]]
-                segs += [mask[si]]
-                ims += [im[si]]
-                tes += [tips[si]]
-                pixs += [pix[si]]
-                pixts += [pix_tip[si]]
-                pixte += [pix_tip[si+1]]
-                relative_rot = \
-                    self._adapt_orientation(pose[si, 2:3] - pose[ref, 2:3], ob,
-                                            self.scale)
-                label = tf.concat([pose[si, :2], relative_rot, cp[si], n[si],
-                                   con[si]], axis=0)
-                labels += [label]
-
-                good_noise = np.random.normal(loc=0, scale=1e-1, size=(24, 8))
-                good_noise[0, :] = 0
-                bad_noise = np.random.normal(loc=10, scale=5, size=(24, 8))
-                bad_noise[12:] = np.random.normal(loc=-10, scale=5,
-                                                  size=(12, 8))
-                # downscale noise for normal and contact
-                good_noise[:, 5:] /= 10
-                bad_noise[:, 5:] /= 10
-                # upscale for pos and or
-                bad_noise[:, :2] *= 10
-                bad_noise[:, 2:3] *= 2
-                good_noise[:, :2] *= 10
-                good_noise[:, 2:3] *= 2
-
-                # adapt to scaling
-                bad_noise /= self.scale
-                good_noise /= self.scale
-                bad_zs += [tf.tile(label[None, :], [24, 1]) + bad_noise]
-                good_zs += [tf.tile(label[None, :], [24, 1]) + good_noise]
-
-            ims = tf.stack(ims)
-            start_ims = tf.stack(start_ims)
-            start_ts = tf.stack(start_ts)
-            tes = tf.stack(tes)
-            pixts = tf.stack(pixts)
-            pixte = tf.stack(pixte)
-            ob = tf.tile(ob, [num])
-            mat = tf.tile(mat, [num])
-
-            values = [(ims, tes, pixts, pixte), tf.stack(labels),
-                      tf.stack(good_zs),
-                      tf.stack(bad_zs), (start_ims, start_ts), (ob, mat)]
-            labels = [tf.stack(labels), tf.stack(pixs), tf.stack(start_pixs),
-                      tf.stack(segs), tf.stack(start_segs), tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_obs_val(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            pose = features['pos']
-            ori = self._adapt_orientation(pose[:, 3:]*(180.0/np.pi),
-                                          features['object'], 1)
-            pose = tf.concat([pose[:, 0:1]*1000/self.scale,
-                              pose[:, 1:2]*1000/self.scale,
-                              ori/self.scale],
-                             axis=1)
-            n = tf.squeeze(features['normal'])/self.scale
-            con = tf.cast(features['contact'], tf.float32)
-            con = tf.reshape(con, [-1, 1])/self.scale
-            tips = features['tip']
-            cp = features['contact_point'][:, :2]*1000
-            con_norm = tf.linalg.norm(cp, axis=-1)
-            cp = tf.where(tf.less(con_norm, 1e-6),
-                          tips[:, :2]*1000, cp)/self.scale
-            pix_tip = features['pix_tip']
-
-            im = features['image']
-            coord = features['coord']
-            mask = features['segmentation']
-            mask = tf.cast(tf.where(tf.greater(mask, 2.5), tf.ones_like(mask),
-                                    tf.zeros_like(mask)), tf.float32)
-            vis = tf.reduce_sum(mask, axis=[1, 2, 3])
-
-            seq_len = im.get_shape()[0].value
-            im = tf.concat([im, coord], axis=-1)
-            pix = features['pix_pos'][:, :2]
-            ob = tf.reshape(features['object'], [1])
-            mat = tf.reshape(features['material'], [1])
-
-            # # sanity check
-            # # load a plane image for reprojecting
-            # path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            # path = os.path.join(path, 'resources', 'plane_image.npy')
-            # print('loading plane image from: ', path)
-
-            # plane_depth = tf.convert_to_tensor(np.load(path))[none, :, :, none]
-
-            # pix_pos = features['pix_pos'][1:2]
-            # pos_3d = features['pos'][1:2, :3]
-            # projected1 = utils._to_3d(pix_pos, im[1:2, :, :, -1:])
-            # projected2 = utils._to_3d(pix_pos, plane_depth)
-            # pix_pro = utils._to_2d(pos_3d)
-
-            # cp = tf.print(cp, [pix_pos, pix_pro],
-            #               summarize=1000, message='pix, pix_pro\n')
-            # cp = tf.print(cp, [pos_3d, projected1, projected2],
-            #               summarize=1000, message='3d, pro_d, pro_plane \n')
-
-            # use every eighth data point
-            start_inds = np.arange(2, seq_len-2, 8)
-            num = len(start_inds)
-
-            # prepare the lists of output tensors
-            viss = []
-            ims = []
-            start_ims = []
-            start_ts = []
-            tes = []
-            labels = []
-            good_zs = []
-            bad_zs = []
-            pixs = []
-            pixts = []
-            pixte = []
-            start_pixs = []
-            segs = []
-            start_segs = []
-            for si in start_inds:
-                start_ts += [tips[1]]
-                start_ims += [im[1]]
-                start_pixs += [pix[1]]
-                start_segs += [mask[1]]
-                viss += [vis[si]]
-                segs += [mask[si]]
-                ims += [im[si]]
-                pixs += [pix[si]]
-                pixts += [pix_tip[si]]
-                pixte += [pix_tip[si+1]]
-                tes += [tips[si]]
-                relative_rot = \
-                    self._adapt_orientation(pose[si, 2:3] - pose[1, 2:3], ob,
-                                            self.scale)
-                label = tf.concat([pose[si, :2], relative_rot, cp[si], n[si],
-                                   con[si]], axis=0)
-                labels += [label]
-                good_noise = np.random.normal(loc=0, scale=1e-1, size=(24, 8))
-                good_noise[0, :] = 0
-                bad_noise = np.random.normal(loc=10, scale=5, size=(24, 8))
-                bad_noise[12:] = np.random.normal(loc=-10, scale=5,
-                                                  size=(12, 8))
-                # downscale noise for normal and contact
-                good_noise[:, 5:] /= 10
-                bad_noise[:, 5:] /= 10
-                # upscale for pos and or
-                bad_noise[:, :2] *= 10
-                bad_noise[:, 2:3] *= 2
-                good_noise[:, :2] *= 10
-                good_noise[:, 2:3] *= 2
-
-                # adapt to scaling
-                bad_noise /= self.scale
-                good_noise /= self.scale
-                bad_zs += [tf.tile(label[None, :], [24, 1]) + bad_noise]
-                good_zs += [tf.tile(label[None, :], [24, 1]) + good_noise]
-
-            ims = tf.stack(ims)
-            start_ims = tf.stack(start_ims)
-            start_ts = tf.stack(start_ts)
-            tes = tf.stack(tes)
-            pixts = tf.stack(pixts)
-            pixte = tf.stack(pixte)
-            ob = tf.tile(ob, [num])
-            mat = tf.tile(mat, [num])
-
-            values = [(ims, tes, pixts, pixte), tf.stack(labels),
-                      tf.stack(good_zs),
-                      tf.stack(bad_zs), (start_ims, start_ts), (ob, mat)]
-            labels = [tf.stack(labels), tf.stack(pixs), tf.stack(start_pixs),
-                      tf.stack(segs), tf.stack(start_segs), tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_process_train(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            pose = features['pos']
-            ori = self._adapt_orientation(pose[:, 3:]*180./np.pi,
-                                          features['object'], 1)
-            pose = tf.concat([pose[:, 0:1]*1000, pose[:, 1:2]*1000, ori],
-                             axis=1)/self.scale
-            n = tf.squeeze(features['normal'])/self.scale
-            con = tf.cast(features['contact'], tf.float32)
-            con = tf.reshape(con, [-1, 1])/self.scale
-            tips = features['tip']
-            cp = features['contact_point'][:, :2]
-            con_norm = tf.linalg.norm(cp, axis=-1)
-            cp = tf.where(tf.less(con_norm, 1e-6),
-                          tips[:, :2], cp)*1000/self.scale
-            friction = \
-                tf.square(tf.reshape(features['friction'], [1]) * 1000.)
-            friction = friction/(100*self.scale)
-            mu = tf.atan(tf.ones([1], dtype=tf.float32) * 0.25)*180./np.pi
-            mu = mu/self.scale
-            ob = tf.reshape(features['object'], [1])
-            mat = tf.reshape(features['material'], [1])
-            seq_len = features['pos'].get_shape()[0].value
-
-            # calculate the actions - scale them by the same amount as the
-            # position
-            t_end = tips[1:, :2]
-            t_start = tips[:-1, :2]
-            u = (t_end - t_start) * 1000./self.scale
-
-            # we use several steps of the sequence
-            start_inds = np.random.randint(2, seq_len-1, 10)
-            num = len(start_inds)
-            self.train_multiplier = num
-
-            # prepare the lists of output tensors
-            start_state = []
-            us = []
-            labels = []
-            for si in start_inds:
-                p_start = pose[si-1][:2]
-                s_start = tf.concat([p_start, tf.zeros([1]), friction, mu,
-                                     cp[si-1], n[si-1], con[si-1]], axis=0)
-                start_state += [s_start]
-                us += [u[si-1]]
-
-                relative_rot = pose[si, 2:3] - pose[si-1, 2:3]
-                relative_rot = \
-                    self._adapt_orientation(relative_rot, ob, self.scale)
-                label = tf.concat([pose[si, :2], relative_rot, friction, mu,
-                                   cp[si], n[si], con[si]], axis=0)
-                labels += [label]
-
-            start_state = tf.stack(start_state)
-            us = tf.stack(us)
-            ob = tf.tile(ob, [num])
-            mat = tf.tile(mat, [num])
-
-            values = [start_state, us, (ob, mat)]
-            labels = [labels, start_state]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_process_val(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            pose = features['pos']
-            ori = self._adapt_orientation(pose[:, 3:]*180./np.pi,
-                                          features['object'], 1)
-            pose = tf.concat([pose[:, 0:1]*1000, pose[:, 1:2]*1000, ori],
-                             axis=1)/self.scale
-            n = tf.squeeze(features['normal'])/self.scale
-            con = tf.cast(features['contact'], tf.float32)
-            con = tf.reshape(con, [-1, 1])/self.scale
-            tips = features['tip']
-            cp = features['contact_point'][:, :2]
-            con_norm = tf.linalg.norm(cp, axis=-1)
-            cp = tf.where(tf.less(con_norm, 1e-6),
-                          tips[:, :2], cp)*1000/self.scale
-            friction = \
-                tf.square(tf.reshape(features['friction'], [1]) * 1000.)
-            friction = friction/(100*self.scale)
-            mu = tf.atan(tf.ones([1], dtype=tf.float32) * 0.25)*180./np.pi
-            mu = mu/self.scale
-            ob = tf.reshape(features['object'], [1])
-            mat = tf.reshape(features['material'], [1])
-            seq_len = features['pos'].get_shape()[0].value
-
-            # calculate the actions - scale them by the same amount as the
-            # position
-            t_end = tips[1:, :2]
-            t_start = tips[:-1, :2]
-            u = (t_end - t_start) * 1000./self.scale
-
-            # use every eigth data point
-            start_inds = np.arange(2, seq_len-1, 8)
-            num = len(start_inds)
-            # prepare the lists of output tensors
-            start_state = []
-            us = []
-            labels = []
-            for si in start_inds:
-                p_start = pose[si-1][:2]
-                s_start = tf.concat([p_start, tf.zeros([1]), friction, mu,
-                                     cp[si-1], n[si-1], con[si-1]], axis=0)
-                start_state += [s_start]
-                us += [u[si-1]]
-
-                relative_rot = pose[si, 2:3] - pose[si-1, 2:3]
-                relative_rot = \
-                    self._adapt_orientation(relative_rot, ob, self.scale)
-                label = tf.concat([pose[si, :2], relative_rot, friction, mu,
-                                   cp[si], n[si], con[si]], axis=0)
-                labels += [label]
-
-            start_state = tf.stack(start_state)
-            us = tf.stack(us)
-            ob = tf.tile(ob, [num])
-            mat = tf.tile(mat, [num])
-
-            values = [start_state, us, (ob, mat)]
-            labels = [labels, start_state]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_train(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            pose = features['pos']
-            ori = self._adapt_orientation(pose[:, 3:]*180./np.pi,
-                                          features['object'], 1)
-            pose = tf.concat([pose[:, 0:1]*1000, pose[:, 1:2]*1000, ori],
-                             axis=1)/self.scale
-            n = tf.squeeze(features['normal'])/self.scale
-            con = tf.cast(features['contact'], tf.float32)
-            con = tf.reshape(con, [-1, 1])/self.scale
-            tips = features['tip']
-            cp = features['contact_point'][:, :2]
-            con_norm = tf.linalg.norm(cp, axis=-1)
-            cp = tf.where(tf.less(con_norm, 1e-6),
-                          tips[:, :2], cp)*1000/self.scale
-            friction = \
-                tf.square(tf.reshape(features['friction'], [1]) * 1000.)
-            friction = friction/(100*self.scale)
-            mu = tf.atan(tf.ones([1], dtype=tf.float32) * 0.25)*180./np.pi
-            mu = mu/self.scale
-
-            # calculate the actions - scale them by the same amount as the
-            # position
-            t_end = tips[1:, :2]
-            t_start = tips[:-1, :2]
-            u = (t_end - t_start) * 1000./self.scale
-
-            im = features['image']
-            coord = features['coord']
-            mask = features['segmentation']
-            mask = tf.cast(tf.where(tf.greater(mask, 2.5), tf.ones_like(mask),
-                                    tf.zeros_like(mask)), tf.float32)
-            vis = tf.reduce_sum(mask, axis=[1, 2, 3])
-            im = tf.concat([im, coord], axis=-1)
-            pix_tip = features['pix_tip']
-
-            ob = tf.reshape(features['object'], [1])
-            mat = tf.reshape(features['material'], [1])
-            seq_len = features['pos'].get_shape()[0].value
-
-            num = 1
-            start_inds = np.random.randint(1, seq_len-self.sl-2, num)
-
-            # prepare the lists of output tensors
-            ims = []
-            start_ims = []
-            start_ts = []
-            start_state = []
-            us = []
-            tes = []
-            pixts = []
-            pixte = []
-            labels = []
-            mv_trs = []
-            mv_rots = []
-            viss = []
-            for si in start_inds:
-                p_start = pose[si][:2]
-                s_start = tf.concat([p_start, tf.zeros([1]), friction, mu,
-                                     cp[si], n[si], con[si]], axis=0)
-                start_state += [s_start]
-                start_ts += [tips[si]]
-                start_ims += [im[si]]
-
-                start = si + 1
-                end = si + 1 + self.sl
-                ims += [im[start:end]]
-                us += [u[start:end]]
-                tes += [tips[start:end]]
-                pixts += [pix_tip[start:end]]
-                pixte += [pix_tip[start+1:end+1]]
-
-                relative_rot = pose[start:end, 2:3] - \
-                    tf.tile(pose[si:si+1, 2:3], [self.sl, 1])
-                relative_rot = \
-                    self._adapt_orientation(relative_rot, ob, self.scale)
-                label = tf.concat([pose[start:end, :2], relative_rot,
-                                   tf.tile(friction[None, :], [self.sl, 1]),
-                                   tf.tile(mu[None, :], [self.sl, 1]),
-                                   cp[start:end], n[start:end],
-                                   con[start:end]], axis=-1)
-                labels += [label]
-                viss += [vis[start:end]]
-
-                mv = pose[start:end] - pose[si:end-1]
-                mv_trs += [tf.reduce_sum(tf.norm(mv[:, :2], axis=-1))]
-                mvr = self._adapt_orientation(mv[:, 2], ob, self.scale)
-                mv_rots += [tf.reduce_sum(tf.abs(mvr))]
-
-            ims = tf.stack(ims)
-            start_ims = tf.stack(start_ims)
-            start_ts = tf.stack(start_ts)
-            start_state = tf.stack(start_state)
-            us = tf.stack(us)
-            tes = tf.stack(tes)
-            pixts = tf.stack(pixts)
-            pixte = tf.stack(pixte)
-            mv_trs = tf.stack(mv_trs)
-            mv_rots = tf.stack(mv_rots)
-            viss = tf.stack(viss)
-
-            ob = tf.tile(ob, [num])
-            mat = tf.tile(mat, [num])
-
-            values = [(ims, tes, pixts, pixte), us, (start_ims, start_ts),
-                      start_state, (ob, mat)]
-            labels = [labels, mv_trs, mv_rots, viss]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_val(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            pose = features['pos']
-            ori = self._adapt_orientation(pose[:, 3:]*180./np.pi,
-                                          features['object'], 1)
-            pose = tf.concat([pose[:, 0:1]*1000, pose[:, 1:2]*1000, ori],
-                             axis=1)/self.scale
-            n = tf.squeeze(features['normal'])/self.scale
-            con = tf.cast(features['contact'], tf.float32)
-            con = tf.reshape(con, [-1, 1])/self.scale
-            tips = features['tip']
-            cp = features['contact_point'][:, :2]
-            con_norm = tf.linalg.norm(cp, axis=-1)
-            cp = tf.where(tf.less(con_norm, 1e-6),
-                          tips[:, :2], cp)*1000/self.scale
-            friction = \
-                tf.square(tf.reshape(features['friction'], [1]) * 1000.)
-            friction = friction/(100*self.scale)
-            mu = tf.atan(tf.ones([1], dtype=tf.float32) * 0.25)*180./np.pi
-            mu = mu/self.scale
-
-            # calculate the actions - scale them by the same amount as the
-            # position
-            t_end = tips[1:, :2]
-            t_start = tips[:-1, :2]
-            u = (t_end - t_start) * 1000./self.scale
-
-            im = features['image']
-            coord = features['coord']
-            mask = features['segmentation']
-            mask = tf.cast(tf.where(tf.greater(mask, 2.5), tf.ones_like(mask),
-                                    tf.zeros_like(mask)), tf.float32)
-            vis = tf.reduce_sum(mask, axis=[1, 2, 3])
-            im = tf.concat([im, coord], axis=-1)
-            pix_tip = features['pix_tip']
-
-            ob = tf.reshape(features['object'], [1])
-            mat = tf.reshape(features['material'], [1])
-            seq_len = features['pos'].get_shape()[0].value
-
-            num = 1
-            # we use several sub-sequences of the validation sequence
-            start_inds = np.arange(1, seq_len-self.sl-2, (self.sl+1)//2)
-            start_inds = start_inds[:num]
-
-            # prepare the lists of output tensors
-            ims = []
-            start_ims = []
-            start_ts = []
-            start_state = []
-            us = []
-            tes = []
-            pixts = []
-            pixte = []
-            labels = []
-            mv_trs = []
-            mv_rots = []
-            viss = []
-            for si in start_inds:
-                p_start = pose[si][:2]
-                s_start = tf.concat([p_start, tf.zeros([1]), friction, mu,
-                                     cp[si], n[si], con[si]], axis=0)
-                start_state += [s_start]
-                start_ts += [tips[si]]
-                start_ims += [im[si]]
-
-                start = si + 1
-                end = si + 1 + self.sl
-                ims += [im[start:end]]
-                us += [u[start:end]]
-                tes += [tips[start:end]]
-                pixts += [pix_tip[start:end]]
-                pixte += [pix_tip[start+1:end+1]]
-
-                relative_rot = pose[start:end, 2:3] - \
-                    tf.tile(pose[si:si+1, 2:3], [self.sl, 1])
-                relative_rot = \
-                    self._adapt_orientation(relative_rot, ob, self.scale)
-                label = tf.concat([pose[start:end, :2], relative_rot,
-                                   tf.tile(friction[None, :], [self.sl, 1]),
-                                   tf.tile(mu[None, :], [self.sl, 1]),
-                                   cp[start:end], n[start:end],
-                                   con[start:end]], axis=-1)
-                labels += [label]
-                viss += [vis[start:end]]
-
-                mv = pose[start:end] - pose[si:end-1]
-                mv_trs += [tf.reduce_sum(tf.norm(mv[:, :2], axis=-1))]
-                mvr = self._adapt_orientation(mv[:, 2], ob, self.scale)
-                mv_rots += [tf.reduce_sum(tf.abs(mvr))]
-
-            ims = tf.stack(ims)
-            start_ims = tf.stack(start_ims)
-            start_ts = tf.stack(start_ts)
-            start_state = tf.stack(start_state)
-            us = tf.stack(us)
-            tes = tf.stack(tes)
-            pixts = tf.stack(pixts)
-            pixte = tf.stack(pixte)
-            mv_trs = tf.stack(mv_trs)
-            mv_rots = tf.stack(mv_rots)
-
-            ob = tf.tile(ob, [num])
-            mat = tf.tile(mat, [num])
-
-            values = [(ims, tes, pixts, pixte), us, (start_ims, start_ts),
-                      start_state, (ob, mat)]
-            labels = [labels, mv_trs, mv_rots, tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
-        def _parse_function_test(example_proto):
-            features = {}
-            for key in keys:
-                record_meta.add_tf_feature(key, features)
-
-            parsed_features = tf.io.parse_single_example(example_proto,
-                                                         features)
-            for key in keys:
-                features[key] = record_meta.reshape_and_cast(key,
-                                                             parsed_features)
-            pose = features['pos']
-            ori = self._adapt_orientation(pose[:, 3:]*180./np.pi,
-                                          features['object'], 1)
-            pose = tf.concat([pose[:, 0:1]*1000, pose[:, 1:2]*1000, ori],
-                             axis=1)/self.scale
-            n = tf.squeeze(features['normal'])/self.scale
-            con = tf.cast(features['contact'], tf.float32)
-            con = tf.reshape(con, [-1, 1])/self.scale
-            tips = features['tip']
-            cp = features['contact_point'][:, :2]
-            con_norm = tf.linalg.norm(cp, axis=-1)
-            cp = tf.where(tf.less(con_norm, 1e-6),
-                          tips[:, :2], cp)*1000/self.scale
-            friction = \
-                tf.square(tf.reshape(features['friction'], [1]) * 1000.)
-            friction = friction/(100*self.scale)
-            mu = tf.atan(tf.ones([1], dtype=tf.float32) * 0.25)*180./np.pi
-            mu = mu/self.scale
-
-            # calculate the actions - scale them by the same amount as the
-            # position
-            t_end = tips[1:, :2]
-            t_start = tips[:-1, :2]
-            u = (t_end - t_start) * 1000./self.scale
-
-            im = features['image']
-            coord = features['coord']
-            mask = features['segmentation']
-            mask = tf.cast(tf.where(tf.greater(mask, 2.5), tf.ones_like(mask),
-                                    tf.zeros_like(mask)), tf.float32)
-            vis = tf.reduce_sum(mask, axis=[1, 2, 3])
-            im = tf.concat([im, coord], axis=-1)
-            pix_tip = features['pix_tip']
-
-            ob = tf.reshape(features['object'], [1])
-            mat = tf.reshape(features['material'], [1])
-            seq_len = features['pos'].get_shape()[0].value
-
-            if self.sl > seq_len//2:
-                start_inds = [1]
-            else:
-                # we use several sub-sequences of the testsequence
-                start_inds = np.arange(1, seq_len-self.sl-2, 20)
-            num = len(start_inds)
-            self.test_multiplier = num
-
-            # prepare the lists of output tensors
-            ims = []
-            start_ims = []
-            start_ts = []
-            start_state = []
-            us = []
-            tes = []
-            pixts = []
-            pixte = []
-            labels = []
-            mv_trs = []
-            mv_rots = []
-            viss = []
-            for si in start_inds:
-                p_start = pose[si][:2]
-                s_start = tf.concat([p_start, tf.zeros([1]), friction, mu,
-                                     cp[si], n[si], con[si]], axis=0)
-                start_state += [s_start]
-                start_ts += [tips[si]]
-                start_ims += [im[si]]
-
-                start = si + 1
-                end = si + 1 + self.sl
-                ims += [im[start:end]]
-                us += [u[start:end]]
-                tes += [tips[start:end]]
-                pixts += [pix_tip[start:end]]
-                pixte += [pix_tip[start+1:end+1]]
-
-                relative_rot = pose[start:end, 2:3] - \
-                    tf.tile(pose[si:si+1, 2:3], [self.sl, 1])
-                relative_rot = \
-                    self._adapt_orientation(relative_rot, ob, self.scale)
-                label = tf.concat([pose[start:end, :2], relative_rot,
-                                   tf.tile(friction[None, :], [self.sl, 1]),
-                                   tf.tile(mu[None, :], [self.sl, 1]),
-                                   cp[start:end], n[start:end],
-                                   con[start:end]], axis=1)
-                labels += [label]
-                viss += [vis[start:end]]
-
-                mv = pose[start:end] - pose[si:end-1]
-                mv_trs += [tf.reduce_sum(tf.norm(mv[:, :2], axis=-1))]
-                mvr = self._adapt_orientation(mv[:, 2], ob, self.scale)
-                mv_rots += [tf.reduce_sum(tf.abs(mvr))]
-
-            ims = tf.stack(ims)
-            start_ims = tf.stack(start_ims)
-            start_ts = tf.stack(start_ts)
-            start_state = tf.stack(start_state)
-            us = tf.stack(us)
-            tes = tf.stack(tes)
-            pixts = tf.stack(pixts)
-            pixte = tf.stack(pixte)
-            mv_trs = tf.stack(mv_trs)
-            mv_rots = tf.stack(mv_rots)
-
-            ob = tf.tile(ob, [num])
-            mat = tf.tile(mat, [num])
-
-            values = [(ims, tes, pixts, pixte), us, (start_ims, start_ts),
-                      start_state, (ob, mat)]
-            labels = [labels, mv_trs, mv_rots, tf.stack(viss)]
-            return tuple(values), tuple(labels)
-
         if train_mode == 'filter':
-            if data_mode == 'train':
-                dataset = dataset.map(_parse_function_train,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'val':
-                dataset = dataset.map(_parse_function_val,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'test':
-                dataset = dataset.map(_parse_function_test,
-                                      num_parallel_calls=num_threads)
+            dataset = dataset.map(
+                lambda x: self._parse_function(x, keys, record_meta,
+                                               data_mode),
+                num_parallel_calls=num_threads)
         elif train_mode == 'pretrain_obs':
-            if data_mode == 'train':
-                dataset = dataset.map(_parse_function_obs_train,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'val' or data_mode == 'test':
-                dataset = dataset.map(_parse_function_obs_val,
-                                      num_parallel_calls=num_threads)
+            dataset = dataset.map(
+                lambda x: self._parse_function_obs(x, keys, record_meta,
+                                                   data_mode),
+                num_parallel_calls=num_threads)
         elif train_mode == 'pretrain_process':
-            if data_mode == 'train':
-                dataset = dataset.map(_parse_function_process_train,
-                                      num_parallel_calls=num_threads)
-            elif data_mode == 'val' or data_mode == 'test':
-                dataset = dataset.map(_parse_function_process_val,
-                                      num_parallel_calls=num_threads)
+            dataset = dataset.map(
+                lambda x: self._parse_function_process(x, keys, record_meta,
+                                                       data_mode),
+                num_parallel_calls=num_threads)
         else:
             self.log.error('unknown training mode: ' + train_mode)
 
@@ -1941,6 +1199,339 @@ class Context(base.BaseContext):
                              tf.data.Dataset.from_tensor_slices((x, y)))
 
         return dataset
+
+    def _parse_example(self, example_proto, keys, record_meta):
+        features = {}
+        for key in keys:
+            record_meta.add_tf_feature(key, features)
+
+        parsed_features = tf.io.parse_single_example(example_proto,
+                                                     features)
+        for key in keys:
+            features[key] = record_meta.reshape_and_cast(key,
+                                                         parsed_features)
+        return features
+
+    def _parse_function_obs(self, example_proto, keys, record_meta, data_mode):
+        features = self._parse_example(example_proto, keys, record_meta)
+
+        pose = features['pos']
+        ori = self._adapt_orientation(pose[:, 3:]*(180.0/np.pi),
+                                      features['object'], 1)
+        pose = tf.concat([pose[:, 0:1]*1000/self.scale,
+                          pose[:, 1:2]*1000/self.scale,
+                          ori/self.scale], axis=1)
+        n = tf.squeeze(features['normal'])/self.scale
+        con = tf.cast(features['contact'], tf.float32)
+        con = tf.reshape(con, [-1, 1])/self.scale
+        tips = features['tip']
+        cp = features['contact_point'][:, :2]*1000
+        con_norm = tf.linalg.norm(cp, axis=-1)
+        cp = tf.where(tf.less(con_norm, 1e-6),
+                      tips[:, :2]*1000, cp)/self.scale
+        pix_tip = features['pix_tip']
+
+        im = features['image']
+        coord = features['coord']
+        mask = features['segmentation']
+        mask = tf.cast(tf.where(tf.greater(mask, 2.5), tf.ones_like(mask),
+                                tf.zeros_like(mask)), tf.float32)
+        vis = tf.reduce_sum(mask, axis=[1, 2, 3])
+
+        seq_len = im.get_shape()[0].value
+        im = tf.concat([im, coord], axis=-1)
+        pix = features['pix_pos'][:, :2]
+        ob = tf.reshape(features['object'], [1])
+        mat = tf.reshape(features['material'], [1])
+
+        # sanity check for reprojection betwen pixels and 3d
+        # # load a plane image for reprojecting
+        # path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        # path = os.path.join(path, 'resources', 'plane_image.npy')
+        # print('loading plane image from: ', path)
+
+        # plane_depth = tf.convert_to_tensor(np.load(path))[none, :, :, none]
+
+        # pix_pos = features['pix_pos'][1:2]
+        # pos_3d = features['pos'][1:2, :3]
+        # projected1 = utils._to_3d(pix_pos, im[1:2, :, :, -1:])
+        # projected2 = utils._to_3d(pix_pos, plane_depth)
+        # pix_pro = utils._to_2d(pos_3d)
+
+        # cp = tf.print(cp, [pix_pos, pix_pro],
+        #               summarize=1000, message='pix, pix_pro\n')
+        # cp = tf.print(cp, [pos_3d, projected1, projected2],
+        #               summarize=1000, message='3d, pro_d, pro_plane \n')
+
+        # we use several steps of the sequence
+        if data_mode == 'train':
+            start_inds = np.random.randint(2, seq_len-2, 5)
+            self.train_multiplier = len(start_inds)
+        else:
+            # use every eighth data point
+            start_inds = np.arange(2, seq_len-2, 8)
+        num = len(start_inds)
+
+        # prepare the lists of output tensors
+        viss = []
+        ims = []
+        start_ims = []
+        start_ts = []
+        tes = []
+        labels = []
+        good_zs = []
+        bad_zs = []
+        pixs = []
+        pixts = []
+        pixte = []
+        start_pixs = []
+        segs = []
+        start_segs = []
+        for si in start_inds:
+            start_ts += [tips[1]]
+            start_ims += [im[1]]
+            start_pixs += [pix[1]]
+            start_segs += [mask[1]]
+            viss += [vis[si]]
+            segs += [mask[si]]
+            ims += [im[si]]
+            pixs += [pix[si]]
+            pixts += [pix_tip[si]]
+            pixte += [pix_tip[si+1]]
+            tes += [tips[si]]
+            relative_rot = \
+                self._adapt_orientation(pose[si, 2:3] - pose[1, 2:3], ob,
+                                        self.scale)
+            label = tf.concat([pose[si, :2], relative_rot, cp[si], n[si],
+                               con[si]], axis=0)
+            labels += [label]
+            good_noise = np.random.normal(loc=0, scale=1e-1, size=(24, 8))
+            good_noise[0, :] = 0
+            bad_noise = np.random.normal(loc=10, scale=5, size=(24, 8))
+            bad_noise[12:] = np.random.normal(loc=-10, scale=5,
+                                              size=(12, 8))
+            # downscale noise for normal and contact
+            good_noise[:, 5:] /= 10
+            bad_noise[:, 5:] /= 10
+            # upscale for pos and or
+            bad_noise[:, :2] *= 10
+            bad_noise[:, 2:3] *= 2
+            good_noise[:, :2] *= 10
+            good_noise[:, 2:3] *= 2
+
+            # adapt to scaling
+            bad_noise /= self.scale
+            good_noise /= self.scale
+            bad_zs += [tf.tile(label[None, :], [24, 1]) + bad_noise]
+            good_zs += [tf.tile(label[None, :], [24, 1]) + good_noise]
+
+        ims = tf.stack(ims)
+        start_ims = tf.stack(start_ims)
+        start_ts = tf.stack(start_ts)
+        tes = tf.stack(tes)
+        pixts = tf.stack(pixts)
+        pixte = tf.stack(pixte)
+        ob = tf.tile(ob, [num])
+        mat = tf.tile(mat, [num])
+
+        values = [(ims, tes, pixts, pixte), tf.stack(labels),
+                  tf.stack(good_zs),
+                  tf.stack(bad_zs), (start_ims, start_ts), (ob, mat)]
+        labels = [tf.stack(labels), tf.stack(pixs), tf.stack(start_pixs),
+                  tf.stack(segs), tf.stack(start_segs), tf.stack(viss)]
+        return tuple(values), tuple(labels)
+
+    def _parse_function_process(self, example_proto, keys, record_meta,
+                                data_mode):
+        features = self._parse_example(example_proto, keys, record_meta)
+
+        pose = features['pos']
+        ori = self._adapt_orientation(pose[:, 3:]*180./np.pi,
+                                      features['object'], 1)
+        pose = tf.concat([pose[:, 0:1]*1000, pose[:, 1:2]*1000, ori],
+                         axis=1)/self.scale
+        n = tf.squeeze(features['normal'])/self.scale
+        con = tf.cast(features['contact'], tf.float32)
+        con = tf.reshape(con, [-1, 1])/self.scale
+        tips = features['tip']
+        cp = features['contact_point'][:, :2]
+        con_norm = tf.linalg.norm(cp, axis=-1)
+        cp = tf.where(tf.less(con_norm, 1e-6),
+                      tips[:, :2], cp)*1000/self.scale
+        friction = \
+            tf.square(tf.reshape(features['friction'], [1]) * 1000.)
+        friction = friction/(100*self.scale)
+        mu = tf.atan(tf.ones([1], dtype=tf.float32) * 0.25)*180./np.pi
+        mu = mu/self.scale
+        ob = tf.reshape(features['object'], [1])
+        mat = tf.reshape(features['material'], [1])
+        seq_len = features['pos'].get_shape()[0].value
+
+        # calculate the actions - scale them by the same amount as the
+        # position
+        t_end = tips[1:, :2]
+        t_start = tips[:-1, :2]
+        u = (t_end - t_start) * 1000./self.scale
+
+        # we use several steps of the sequence
+        if data_mode == 'train':
+            start_inds = np.random.randint(2, seq_len-1, 10)
+            self.train_multiplier = len(start_inds)
+        else:
+            # use every eigth data point
+            start_inds = np.arange(2, seq_len-1, 8)
+        num = len(start_inds)
+
+        # prepare the lists of output tensors
+        start_state = []
+        us = []
+        labels = []
+        for si in start_inds:
+            p_start = pose[si-1][:2]
+            s_start = tf.concat([p_start, tf.zeros([1]), friction, mu,
+                                 cp[si-1], n[si-1], con[si-1]], axis=0)
+            start_state += [s_start]
+            us += [u[si-1]]
+
+            relative_rot = pose[si, 2:3] - pose[si-1, 2:3]
+            relative_rot = \
+                self._adapt_orientation(relative_rot, ob, self.scale)
+            label = tf.concat([pose[si, :2], relative_rot, friction, mu,
+                               cp[si], n[si], con[si]], axis=0)
+            labels += [label]
+
+        start_state = tf.stack(start_state)
+        us = tf.stack(us)
+        ob = tf.tile(ob, [num])
+        mat = tf.tile(mat, [num])
+
+        values = [start_state, us, (ob, mat)]
+        labels = [labels, start_state]
+        return tuple(values), tuple(labels)
+
+    def _parse_function(self, example_proto, keys, record_meta, data_mode):
+        features = self._parse_example(example_proto, keys, record_meta)
+        pose = features['pos']
+        ori = self._adapt_orientation(pose[:, 3:]*180./np.pi,
+                                      features['object'], 1)
+        pose = tf.concat([pose[:, 0:1]*1000, pose[:, 1:2]*1000, ori],
+                         axis=1)/self.scale
+        n = tf.squeeze(features['normal'])/self.scale
+        con = tf.cast(features['contact'], tf.float32)
+        con = tf.reshape(con, [-1, 1])/self.scale
+        tips = features['tip']
+        cp = features['contact_point'][:, :2]
+        con_norm = tf.linalg.norm(cp, axis=-1)
+        cp = tf.where(tf.less(con_norm, 1e-6),
+                      tips[:, :2], cp)*1000/self.scale
+        friction = \
+            tf.square(tf.reshape(features['friction'], [1]) * 1000.)
+        friction = friction/(100*self.scale)
+        mu = tf.atan(tf.ones([1], dtype=tf.float32) * 0.25)*180./np.pi
+        mu = mu/self.scale
+
+        # calculate the actions - scale them by the same amount as the
+        # position
+        t_end = tips[1:, :2]
+        t_start = tips[:-1, :2]
+        u = (t_end - t_start) * 1000./self.scale
+
+        im = features['image']
+        coord = features['coord']
+        mask = features['segmentation']
+        mask = tf.cast(tf.where(tf.greater(mask, 2.5), tf.ones_like(mask),
+                                tf.zeros_like(mask)), tf.float32)
+        vis = tf.reduce_sum(mask, axis=[1, 2, 3])
+        im = tf.concat([im, coord], axis=-1)
+        pix_tip = features['pix_tip']
+
+        ob = tf.reshape(features['object'], [1])
+        mat = tf.reshape(features['material'], [1])
+        seq_len = features['pos'].get_shape()[0].value
+
+        # we use several steps of the sequence
+        if data_mode == 'train':
+            num = 1
+            start_inds = np.random.randint(1, seq_len-self.sl-2, num)
+        elif data_mode == 'val':
+            num = 1
+            # we use several sub-sequences of the validation sequence
+            start_inds = np.arange(1, seq_len-self.sl-2, (self.sl+1)//2)
+            start_inds = start_inds[:num]
+        else:
+            if self.sl > seq_len//2:
+                start_inds = [1]
+            else:
+                start_inds = np.arange(1, seq_len-self.sl-2, 20)
+            num = len(start_inds)
+            self.test_multiplier = num
+
+
+        # prepare the lists of output tensors
+        ims = []
+        start_ims = []
+        start_ts = []
+        start_state = []
+        us = []
+        tes = []
+        pixts = []
+        pixte = []
+        labels = []
+        mv_trs = []
+        mv_rots = []
+        viss = []
+        for si in start_inds:
+            p_start = pose[si][:2]
+            s_start = tf.concat([p_start, tf.zeros([1]), friction, mu,
+                                 cp[si], n[si], con[si]], axis=0)
+            start_state += [s_start]
+            start_ts += [tips[si]]
+            start_ims += [im[si]]
+
+            start = si + 1
+            end = si + 1 + self.sl
+            ims += [im[start:end]]
+            us += [u[start:end]]
+            tes += [tips[start:end]]
+            pixts += [pix_tip[start:end]]
+            pixte += [pix_tip[start+1:end+1]]
+
+            relative_rot = pose[start:end, 2:3] - \
+                tf.tile(pose[si:si+1, 2:3], [self.sl, 1])
+            relative_rot = \
+                self._adapt_orientation(relative_rot, ob, self.scale)
+            label = tf.concat([pose[start:end, :2], relative_rot,
+                               tf.tile(friction[None, :], [self.sl, 1]),
+                               tf.tile(mu[None, :], [self.sl, 1]),
+                               cp[start:end], n[start:end],
+                               con[start:end]], axis=-1)
+            labels += [label]
+            viss += [vis[start:end]]
+
+            mv = pose[start:end] - pose[si:end-1]
+            mv_trs += [tf.reduce_sum(tf.norm(mv[:, :2], axis=-1))]
+            mvr = self._adapt_orientation(mv[:, 2], ob, self.scale)
+            mv_rots += [tf.reduce_sum(tf.abs(mvr))]
+
+        ims = tf.stack(ims)
+        start_ims = tf.stack(start_ims)
+        start_ts = tf.stack(start_ts)
+        start_state = tf.stack(start_state)
+        us = tf.stack(us)
+        tes = tf.stack(tes)
+        pixts = tf.stack(pixts)
+        pixte = tf.stack(pixte)
+        mv_trs = tf.stack(mv_trs)
+        mv_rots = tf.stack(mv_rots)
+        viss = tf.stack(viss)
+
+        ob = tf.tile(ob, [num])
+        mat = tf.tile(mat, [num])
+
+        values = [(ims, tes, pixts, pixte), us, (start_ims, start_ts),
+                  start_state, (ob, mat)]
+        labels = [labels, mv_trs, mv_rots, viss]
+        return tuple(values), tuple(labels)
 
     ######################################
     # Evaluation
@@ -2906,7 +2497,7 @@ class ObservationNoise(BaseLayer):
             self.add_weight(name='bias_fixed', shape=[self.dim_z],
                             trainable=False,
                             initializer=tf.constant_initializer(init_const))
-        num = self.dim_z * (self.dim_z + 1) / 2
+        num = self.dim_z * (self.dim_z + 1) // 2
         wd = 1e-3 * self.scale**2
 
         if self.hetero and self.diag:
@@ -3064,13 +2655,13 @@ class ObservationNoise(BaseLayer):
                 tf.summary.histogram('het_full_fc1_out', het_full_fc1)
                 tf.summary.histogram('het_tri_out', tri)
 
-            R = tf.contrib.distributions.fill_triangular(tri)
+            R = compat.fill_triangular(tri)
             R += tf.linalg.diag(self.het_full_init_bias)
             R = tf.matmul(R, tf.linalg.matrix_transpose(R))
             R = R + tf.linalg.diag(self.bias_fixed)
         else:
             tri = self.const_full
-            R = tf.contrib.distributions.fill_triangular(tri)
+            R = compat.fill_triangular(tri)
             R += tf.linalg.diag(self.const_full_init_bias)
             R = tf.matmul(R, tf.linalg.matrix_transpose(R))
             R = R + tf.linalg.diag(self.bias_fixed)
@@ -3427,7 +3018,7 @@ class ProcessNoise(BaseLayer):
             self.add_weight(name='bias_fixed', shape=[self.dim_x],
                             trainable=False,
                             initializer=tf.constant_initializer(init_const))
-        num = self.dim_x * (self.dim_x + 1) / 2
+        num = self.dim_x * (self.dim_x + 1) // 2
         wd = 1e-3 * self.scale**2
 
         if self.hetero and self.diag and self.learned:
@@ -3562,13 +3153,13 @@ class ProcessNoise(BaseLayer):
                     tf.summary.histogram('het_full_lrn_fc2_out', fc2)
                     tf.summary.histogram('het_full_lrn_out', tri)
 
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.het_full_lrn_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)
             else:
                 tri = self.const_full_lrn
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.const_full_lrn_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)
@@ -3599,13 +3190,13 @@ class ProcessNoise(BaseLayer):
                     tf.summary.histogram('het_full_ana_fc2_out', fc2)
                     tf.summary.histogram('het_full_ana_out', tri)
 
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.het_full_ana_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)
             else:
                 tri = self.const_full_ana
-                Q = tf.contrib.distributions.fill_triangular(tri)
+                Q = compat.fill_triangular(tri)
                 Q += tf.linalg.diag(self.const_full_ana_init_bias)
                 Q = tf.matmul(Q, tf.linalg.matrix_transpose(Q))
                 Q = Q + tf.linalg.diag(self.bias_fixed)

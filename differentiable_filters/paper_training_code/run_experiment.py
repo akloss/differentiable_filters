@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Sun Dec 13 12:40:52 2020
-
-@author: alina
+Script that runs an experiment - i.e. (pre)trains and evaluates a
+differentiable filter with possibly multiple different training parameter
+settings.
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
 
 import argparse
 import numpy as np
@@ -21,12 +16,28 @@ import sys
 import shutil
 import copy
 
-from differentiable_filters import train
-from differentiable_filters import test
+from differentiable_filters.paper_training_code import train
+from differentiable_filters.paper_training_code import test
 
 
 class RunExperiment():
     def __init__(self, args):
+        """
+        A class that handles (pre)training and evaluation of a differentiable
+        filter with the given settings and possibly multiple different training
+        parameter settings.
+
+        Parameters
+        ----------
+        args : argparse output
+            The desired settings for the experiment, see below for the list
+            of possible arguments
+
+        Returns
+        -------
+        None.
+
+        """
         self.param = args
         self.redo = args.redo_results
         self.base_dir = args.out_dir
@@ -108,6 +119,10 @@ class RunExperiment():
                 }
 
     def run_experiments(self):
+        """
+        Runs the experiment
+
+        """
         self.log.info('##########################################')
         self.log.info('# Starting experiment ' + self.name)
         self.log.info('##########################################')
@@ -153,6 +168,14 @@ class RunExperiment():
         """
         If the experiment uses pretraining, we either have to run pretraining
         or we can just use the data that is already there
+
+        Returns
+        -------
+        success : bool
+            If the pretraining was successful or not
+        weight_files : dict
+            Dictionary for the weight files that contain the pretrained weights
+
         """
         self.log.info('### Using pretraining ')
         self.log.info('###---------------------------------------')
@@ -180,8 +203,7 @@ class RunExperiment():
                 self.log.info('######------------------------------------')
                 train_param = \
                     self._get_train_configuration('pretrain_observations')
-                suc = self.run_train(working_dir, train_param,
-                                     'pretrain_obs.ckpt-0', 'pretrain_obs')
+                suc = self.run_train(working_dir, train_param, 'pretrain_obs')
                 if suc:
                     self.log.info('###### ... Starting Evaluation ')
                     self.log.info('######---------------------------------')
@@ -205,7 +227,6 @@ class RunExperiment():
                 train_param = \
                     self._get_train_configuration('pretrain_process')
                 suc = self.run_train(working_dir, train_param,
-                                     'pretrain_process.ckpt-0',
                                      'pretrain_process')
                 if suc:
                     self.log.info('###### ... Starting Evaluation ')
@@ -223,9 +244,31 @@ class RunExperiment():
         self.log.info('###---------------------------------------')
         return success, weight_files
 
-    def run_train(self, working_dir, train_param, out_name, mode='filter',
+    def run_train(self, working_dir, train_param, mode='filter',
                   weight_files={}):
-        # run training for all parameter combinations in train_param
+        """
+        Runs training for a model for all parameter combinations in train_param
+
+        Parameters
+        ----------
+        working_dir :  str
+            Path to the directory where the output of the trainign should be
+            stored
+        train_param : list
+            List with all training parameter settings that should be tried.
+        mode : str, optional
+            Flag that indicates if we train a filter or run pretraining.
+            The default is 'filter'.
+        weight_files : dict, optional
+            If available, a dictionary with weight files from which variables
+            should be restored. The default is {}.
+
+        Returns
+        -------
+        done_training : bool
+            If the training was successful
+
+        """
         done_training = True
         all_success = True
         net_param = vars(copy.deepcopy(self.param))
@@ -245,9 +288,6 @@ class RunExperiment():
 
             if mode != 'filter':
                 param['add_initial_noise'] = 0
-            # if self.param.weight_file is not None:
-            #     param['weight_file'] = {'observations':
-            #                             self.param.weight_file}
             if not os.path.exists(os.path.join(config_dir, 'DONE')):
                 run = True
                 if os.path.exists(os.path.join(config_dir, 'RUNNING')):
@@ -300,6 +340,25 @@ class RunExperiment():
         return done_training
 
     def run_eval(self, working_dir, out_name, mode='filter'):
+        """
+        Handle the evaluation of trained models
+
+        Parameters
+        ----------
+         working_dir :  str
+            Path to the directory where the output of the evaluation should be
+            stored
+        out_name : str
+            How the saved weight file should be called.
+        mode : str, optional
+            Flag that indicates if we tra
+
+        Returns
+        -------
+        done_evaluation : bool
+            If the evaluation was successful.
+
+        """
         self.log.info('###### Getting the best model ')
         # select the best
         suc, best = self._get_best(working_dir)
@@ -315,19 +374,34 @@ class RunExperiment():
             if self.redo or not os.path.exists(os.path.join(working_dir,
                                                             out_name)):
                 # evaluate
-                done_validating = self._evaluate(res_dir, best, out_name, mode)
+                done_evaluation = self._evaluate(res_dir, best, out_name, mode)
             else:
                 self.log.info('##### Testing already done.')
                 self.log.info('######------------------------------------')
-                done_validating = True
+                done_evaluation = True
         else:
             self.log.info('##### Not testing')
             self.log.info('######------------------------------------')
-            done_validating = True
+            done_evaluation = True
 
-        return done_validating
+        return done_evaluation
 
     def _get_last_checkpoint(self, config_dir):
+        """
+        Returns the last checkpoint that has been written out for this training
+        process
+
+        Parameters
+        ----------
+        config_dir : str
+            The path to the directory where the checkpoints are saved
+
+        Returns
+        -------
+        str
+            The path to the last checkpoint
+
+        """
         ckpt_files = [os.path.join(config_dir, 'train', f)
                       for f in os.listdir(os.path.join(config_dir, 'train'))
                       if f.endswith('.index')]
@@ -337,6 +411,21 @@ class RunExperiment():
         return ckpt_files[0]
 
     def _get_train_configuration(self, config_name):
+        """
+        Creates a list with all different training parameter settings for
+        this experiment
+
+        Parameters
+        ----------
+        config_name : str
+            The identifier of the desired trainign configuration
+
+        Returns
+        -------
+        params : list
+            list with all different training parameter settings
+
+        """
         config = self.confs[config_name]
         # config should have learning rate, decay steps, decay factor
         lrs = config['lr']
@@ -358,6 +447,24 @@ class RunExperiment():
         return params
 
     def _train(self, param, config_dir, mode):
+        """
+        Runs the actual training
+
+        Parameters
+        ----------
+        param : dict
+            A dictionary of all settings for this experiment
+        config_dir : str
+            Path to the directory where the training output should be written to
+        mode : str
+            Indicates if we are pretrainign or trainign a complete filter
+
+        Returns
+        -------
+        success : bool
+            If the taining was successful
+
+        """
         # write out the traning parameters
         with open(os.path.join(config_dir, 'parameters.json'), 'w') as f:
             json.dump(param, f)
@@ -369,6 +476,26 @@ class RunExperiment():
         return success
 
     def _get_best(self, working_dir):
+        """
+        Get the trained model with the best validation loss over all training
+        parameter settings that have been tried and all training steps.
+
+        Parameters
+        ----------
+        working_dir : str
+            Path to the directory that contains the training output directories
+            for all trainign configurations
+
+        Returns
+        -------
+        bool
+            If a successfully trained model has been found
+        tuple
+            The directory with the training output of the best model, the
+            validation loss at the best training step and the best training
+            step.
+
+        """
         # read in the data from the tensorflow summary files
         config_dirs = [os.path.join(working_dir, f)
                        for f in os.listdir(working_dir) if 'res' not in f]
@@ -415,6 +542,29 @@ class RunExperiment():
         return True, best
 
     def _evaluate(self, res_dir, model, out_name, mode):
+        """
+        Runs the actual evaluationh of a trained model
+
+        Parameters
+        ----------
+        res_dir : str
+            Path of the directory where results are written to.
+        model : tuple
+            The directory with the training output of the best model, the
+            validation loss at the best training step and the best training
+            step.
+        out_name : str
+            We write out the weight file of the model at the best training step
+            again under this name
+        mode : str
+            Indicates if the trained model is from pretraining or from training
+            a full filter
+
+        Returns
+        -------
+        all_success : bool
+            If the evaluation ran successfully
+        """
         weight_file = {'full': os.path.join(model[0], 'train',
                                             'model.ckpt-' + str(model[1]))}
         step = model[1]
@@ -535,8 +685,23 @@ class RunExperiment():
                                     out_file + ending)
         return all_success
 
-    def _plot_val_loss(self, model, out_dir):
-        val_dir = os.path.join(model, 'val')
+    def _plot_val_loss(self, model_dir, out_dir):
+        """
+        Plots the development of the validation loss over training
+
+        Parameters
+        ----------
+        model_dir : str
+            The directory with the training output
+        out_dir : str
+            he directory where the plot should be saved
+
+        Returns
+        -------
+        None.
+
+        """
+        val_dir = os.path.join(model_dir, 'val')
         log_file = open(os.path.join(val_dir, 'log.csv'), 'r')
 
         plot_vals = {}
@@ -597,7 +762,7 @@ class RunExperiment():
 
 
 def main():
-    parser = argparse.ArgumentParser('run_experiments')
+    parser = argparse.ArgumentParser('run differentiable filter experiment')
     parser.add_argument('--name', dest='name', type=str,
                         required=True, help='experiment name')
     parser.add_argument('--data-name-train', dest='data_name_train', type=str,
@@ -741,9 +906,11 @@ def main():
     # for ukf
     parser.add_argument('--kappa', dest='kappa', default=0.5,
                         type=float, help='kappa parameter of the ukf')
-    parser.add_argument('--scaled', dest='scaled', default=0,
-                        choices=[0, 1], type=int,
-                        help='use the scaled sigma point variant of the ukf?')
+    parser.add_argument('--scaled_alpha', dest='scaled_alpha', default=1.,
+                        type=float,
+                        help='alpha parameter of the ukf')
+    parser.add_argument('--beta', dest='beta', default=0.,  type=float,
+                        help='beta parameter of the ukf')
     # for particle filter
     parser.add_argument('--resample-rate', dest='resample_rate',
                         type=int, default=1.,
@@ -771,7 +938,7 @@ def main():
     parser.add_argument('--num-units', dest='num_units', type=int, default=512,
                         help='number of units in an lstm model')
     parser.add_argument('--lstm-structure', dest='lstm_structure', type=str,
-                        default='none', choices=['lstm2', 'lstm1'],
+                        default='lstm1', choices=['lstm2', 'lstm1'],
                         help='structure of the lstm: choos lstm1 for one ' +
                         'layer of lstm cells and lstm2 for two layers')
 

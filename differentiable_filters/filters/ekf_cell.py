@@ -1,32 +1,32 @@
-# -*- coding: utf-8 -*-
 """
-Created on Tue Mar  3 12:56:47 2020
-
-@author: akloss
+RNN cell implementing a Differentiable Extended Kalman Filter
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
 
 import tensorflow as tf
 from differentiable_filters.filters import filter_cell_base as base
 
 
 class EKFCell(base.FilterCellBase):
-    def __init__(self, param, context):
+    def __init__(self, context, problem, update_rate=1, debug=False):
         """
         RNN cell implementing a Differentiable Extended Kalman Filter
 
         Parameters
         ----------
-        param : dict
-            parmaters
         context : tf.keras.Model
             A context class that implements all functions that are specific to
             the filtering problem (e.g. process and observation model)
+        problem : str
+            A string identifyer for the problem defined by the context
+        update_rate : int, optional
+            The rate at which observations come in (allows simulating lower
+            observation rates). Default is 1
+        debug : bool, optional
+            If true, the filters will print out information at each step.
+            Default is False.
         """
-        base.FilterCellBase.__init__(self, param, context)
+        base.FilterCellBase.__init__(self, context, problem, update_rate,
+                                     debug)
 
     @property
     def state_size(self):
@@ -78,27 +78,22 @@ class EKFCell(base.FilterCellBase):
             covar_old = tf.reshape(covar_old, [self.batch_size, self.dim_x,
                                                self.dim_x])
 
+            print_ops = []
             if self.debug:
-                state_old = tf.Print(state_old, [tf.squeeze(step)],
-                                     message='------------------- \n step \n ')
-                state_old = tf.Print(state_old, [state_old], summarize=1000,
-                                     message='state old \n')
-                state_old = tf.Print(state_old, [covar_old], summarize=1000,
-                                     message='covar old \n')
-                state_old = tf.Print(state_old, [actions], summarize=1000,
-                                     message='actions \n')
+                print_ops += [tf.print('------------------- \n step \n ',
+                                       tf.squeeze(step[0]))]
+                print_ops += [tf.print('old state: \n', state_old[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('old covar: \n', covar_old[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('actions: \n', actions[0], summarize=-1)]
 
             ###################################################################
             # preproess the raw observations
-            z, encoding = self.context.sensor_model(raw_observations, training)
+            z, encoding = self.context.run_sensor_model(raw_observations,
+                                                        training)
 
-            if self.learn_r:
-                R = self.context.observation_noise(
-                    encoding, hetero=self.hetero_r,
-                    diag=self.diagonal_covar, training=training)
-            else:
-                R = tf.tile(self.context.R[None, :, :],
-                            [self.batch_size, 1, 1])
+            R = self.context.get_observation_noise(encoding, training=training)
             ###################################################################
             # predict the next state
             state_pred, covar_pred, Q, F = \
@@ -106,26 +101,24 @@ class EKFCell(base.FilterCellBase):
                                       training=training)
 
             # and the expected observations
-            z_pred, H = self.context.observation_model(state_pred,
-                                                       training=training)
+            z_pred, H = self.context.run_observation_model(state_pred,
+                                                           training=training)
             if self.debug:
-                state_pred = tf.Print(state_pred, [state_pred],
-                                      summarize=10000, message='state pred \n')
-                state_pred = tf.Print(state_pred, [covar_pred],
-                                      summarize=10000, message='covar pred \n')
-                state_pred = tf.Print(state_pred, [F], summarize=10000,
-                                      message='F \n')
-                state_pred = tf.Print(state_pred, [Q], summarize=10000,
-                                      message='Q \n')
-                state_pred = tf.Print(state_pred, [R], summarize=10000,
-                                      message='R \n')
-                state_pred = tf.Print(state_pred, [z_pred], summarize=10000,
-                                      message='z pred \n')
+                print_ops += [tf.print('predicted state: \n', state_pred[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('predicted covar: \n', covar_pred[0],
+                                       summarize=-1)]
+                print_ops += [tf.print('F: \n', F[0], summarize=-1)]
+                print_ops += [tf.print('Q: \n', Q[0], summarize=-1)]
+                print_ops += [tf.print('R: \n', R[0], summarize=-1)]
+                print_ops += [tf.print('predicted z: \n', z_pred[0],
+                                       summarize=-1)]
 
             ###################################################################
             # update the predictions with the observations
             state_up, covar_up = \
-                self._update(state_pred, covar_pred, z_pred, H, z, R)
+                self._update(state_pred, covar_pred, z_pred, H, z, R,
+                             print_ops)
 
             # this lets us emulate not getting observations at every step
             state = tf.cond(tf.equal(tf.math.mod(step[0, 0],
@@ -136,8 +129,11 @@ class EKFCell(base.FilterCellBase):
                             lambda: covar_up, lambda: covar_pred)
 
             # now flatten the tensors again for output
-            state = tf.reshape(state, [self.batch_size, -1])
-            covar = tf.reshape(covar, [self.batch_size, -1])
+            # the control_dependency statement ensures that the debug print
+            # operations are executed in tf1. graph mode as well
+            with tf.control_dependencies(print_ops):
+                state = tf.reshape(state, [self.batch_size, -1])
+                covar = tf.reshape(covar, [self.batch_size, -1])
 
             # the recurrent state contains the updated state estimate
             new_state = (state, covar, step + 1)
@@ -145,9 +141,7 @@ class EKFCell(base.FilterCellBase):
             # we can output additional output, but it also makes sense to add
             # the predicted state here again to have access to the full
             # sequence of states after running the network
-            output = (tf.reshape(state, [self.batch_size, -1]),
-                      tf.reshape(covar, [self.batch_size, -1]),
-                      tf.reshape(z, [self.batch_size, -1]),
+            output = (state, covar, z,
                       tf.reshape(R, [self.batch_size, -1]),
                       tf.reshape(Q, [self.batch_size, -1]))
 
@@ -180,17 +174,10 @@ class EKFCell(base.FilterCellBase):
             The Jacobian of the process model wrt. the old state
         """
         state_pred, F = \
-            self.context.process_model(state_old, actions,
-                                       self.learn_process, training)
+            self.context.run_process_model(state_old, actions, training)
 
         # get the process noise
-        if self.learn_q:
-            Q = self.context.process_noise(
-                state_old, actions, learned=self.learn_process,
-                hetero=self.hetero_q, diag=self.diagonal_covar,
-                training=training)
-        else:
-            Q = tf.tile(self.context.Q[None, :, :], [self.batch_size, 1, 1])
+        Q = self.context.get_process_noise(state_old, actions, training)
 
         covar_pred = \
             tf.matmul(F, tf.matmul(covar_old,
@@ -198,7 +185,7 @@ class EKFCell(base.FilterCellBase):
 
         return state_pred, covar_pred, Q, F
 
-    def _update(self, state_pred, covar_pred, z_pred, H, z, R):
+    def _update(self, state_pred, covar_pred, z_pred, H, z, R, print_ops):
         """
         Update step of the EKF
 
@@ -231,10 +218,9 @@ class EKFCell(base.FilterCellBase):
         update = tf.squeeze(tf.matmul(K, innovation), -1)
 
         if self.debug:
-            update = tf.Print(update, [z], summarize=10000, message='z \n')
-            update = tf.Print(update, [K], summarize=10000, message='K \n')
-            update = tf.Print(update, [update], summarize=10000,
-                              message='update \n')
+            print_ops += [tf.print('observed z: \n', z[0], summarize=-1)]
+            print_ops += [tf.print('K: \n', K[0], summarize=-1)]
+            print_ops += [tf.print('state update: \n', update[0], summarize=-1)]
 
         # Compute the new state
         state_up = state_pred + update

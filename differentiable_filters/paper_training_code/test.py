@@ -1,22 +1,16 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Sun Dec 13 12:25:28 2020
-
-@author: alina
+Evaluation of a differentiable filter
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function, unicode_literals
+# this code only works with tensorflow 1
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
-
-import tensorflow as tf
 import numpy as np
 import os
 import yaml
 
-from differentiable_filters import filter_network as filtering
+from differentiable_filters.paper_training_code import filter_network as filtering
 
 
 class TestNet():
@@ -127,19 +121,17 @@ class TestNet():
             # setup the problem context
             ###############################################################
             try:
-                # TODO parameterized import
                 if self.param['problem'] == 'kitti':
-                    from differentiable_filters.contexts import kitti
-                    self.context = kitti.Context(self.param, mode)
+                    from differentiable_filters.contexts import paper_kitti
+                    self.context = paper_kitti.Context(self.param, mode)
                 elif self.param['problem'] == 'toy':
-                    from differentiable_filters.contexts import toy
-                    self.context = toy.Context(self.param, mode)
+                    from differentiable_filters.contexts import paper_disc_tracking
+                    self.context = paper_disc_tracking.Context(self.param, mode)
                 elif self.param['problem'] == 'pushing':
-                    from differentiable_filters.contexts import pushing
-                    self.context = pushing.Context(self.param, mode)
+                    from differentiable_filters.contexts import paper_pushing
+                    self.context = paper_pushing.Context(self.param, mode)
                 else:
-                    self.log.error('Unknown context: ' +
-                                   self.param['problem'])
+                    self.log.error('Unknown context: ' + self.param['problem'])
                     return False
             except Exception as ex:
                 self.log.exception(ex)
@@ -175,10 +167,10 @@ class TestNet():
                 test_set = self.net.tf_record_map(self.param['data_dir'],
                                                   self.param['data_name'],
                                                   test_set, 'test', mode,
-                                                  num_threads=3)
+                                                  num_threads=1)
 
                 test_set = test_set.batch(self.batch_size, drop_remainder=True)
-                test_set = test_set.prefetch(100)
+                #test_set = test_set.prefetch(100)
                 iterator = \
                     tf.compat.v1.data.make_initializable_iterator(test_set)
 
