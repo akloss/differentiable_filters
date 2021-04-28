@@ -1,9 +1,9 @@
 # differentiable_filters
 TensorFlow code for the paper [How to Train Your Differentiable Filter](https://arxiv.org/abs/2012.14313). 
 
-Implements the Extended Kalman filter, the Unscented Kalman filter, a sampling based Unscented Kalman filter and the Particle filter in a differentiable way under "filters". 
+Implements the Extended Kalman filter, the Unscented Kalman filter, a sampling based Unscented Kalman filter and the Particle filter in a differentiable way under [filters](https://github.com/akloss/differentiable_filters/tree/main/differentiable_filters/filters). 
 
-The file example_training_code.run_example.py together with contexts.example_context.py provides a simple reference for how to set up and train a differentiable filter (DF) in TensorFlow 2.4.1. See below for details.
+The file [example_training_code.run_example.py](https://github.com/akloss/differentiable_filters/blob/main/differentiable_filters/example_training_code/run_example.py) together with [contexts.example_context.py](https://github.com/akloss/differentiable_filters/blob/main/differentiable_filters/contexts/example_context.py) provides a simple reference for how to set up and train a differentiable filter (DF) in TensorFlow 2.4.1. See below for details.
 
 A note on TensorFlow versions: While the example assumes TensorFlow 2 is installed, the provided filtering code is also usable under TensorFlow 1 (we tested with Tensorflow 1.14). 
 
@@ -38,10 +38,10 @@ run_df_example -h
 To use the differentiable filters in your project, you mainly need to do two things:
 
 1) Create a context class that describes the problem you want to run the DF on. 
-This class needs inherit from contexts.BaseContext and implement the interface defined there. You can look at the file contexts.example_context.py for a simple example.
+This class needs inherit from [contexts.BaseContext](https://github.com/akloss/differentiable_filters/blob/main/differentiable_filters/contexts/base_context.py) and implement the interface defined there. You can look at [contexts.example_context.py](https://github.com/akloss/differentiable_filters/blob/main/differentiable_filters/contexts/example_context.py) for a simple example.
 
-2) Combine the context with the differentiable filtering algorithm you want to use. You can look at the class FilterApplication defined in example_training_code.run_example.py for reference.
-In general, the DFs are implemented as instances of tf.keras.layers.AbstractRNNCell. This means they define how to perform one step of filtering. To apply the DF to a complete sequence, the filter RNN cell has to be wrapped in an RNN layer as you can see in this example
+2) Combine the context with the differentiable filtering algorithm you want to use. You can look at the class FilterApplication defined in [example_training_code.run_example.py](https://github.com/akloss/differentiable_filters/blob/main/differentiable_filters/example_training_code/run_example.py) for reference.
+In general, the DFs are implemented as instances of [tf.keras.layers.AbstractRNNCell](https://www.tensorflow.org/api_docs/python/tf/keras/layers/AbstractRNNCell). This means they define how to perform one step of filtering. To apply the DF to a complete sequence, the filter RNN cell has to be wrapped in an RNN layer as you can see in this example
 ```
 # Instantiate a context object
 context = ExampleContext(batch_size, filter_type, loss, hetero_q, hetero_r, learned_process)
@@ -68,9 +68,9 @@ outputs = rnn_layer(inputs, initial_state=init_state)
 
 In addition to the differentiable filters, we provide the full code that was used to run the experiments described in the paper for reference.
 
-Under "contexts", the implementation of the three tasks used in the paper (marked by the "paper_" prefix) with their specific implementations for process and sensor model as well as noise models can be found. "paper_training_code" contains functionality for training and evaluation of the DFs.
+Under [contexts](https://github.com/akloss/differentiable_filters/tree/main/differentiable_filters/contexts), the implementation of the three tasks used in the paper (marked by the "paper_" prefix) with their specific implementations for process and sensor model as well as noise models can be found. [paper_training_code](https://github.com/akloss/differentiable_filters/tree/main/differentiable_filters/paper_training_code) contains functionality for training and evaluation of the DFs.
 
-The training script provided in paper_training_code can be run with the script `run_df_filter_experiment`. It has a great number of parameters to determine the type and behaviour of the DFs and the training process. You can get a list by typing
+The training script provided here can be run with the script `run_df_filter_experiment`. It has a great number of parameters to determine the type and behaviour of the DFs and the training process. You can get a list by typing
 ```
 run_filter_experiment -h
 ```
