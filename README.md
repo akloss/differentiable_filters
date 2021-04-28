@@ -55,8 +55,8 @@ To run the RNN, we need to provide an initial state for the RNN and the sequence
 ```
 # define the initial state consisting of the mean and covariance of the initial belief and a step counter
 init_state = (initial_mean,
-              tf.reshape(intial_covariance, [self.batch_size, -1]),
-              tf.zeros([self.batch_size, 1]))
+              tf.reshape(intial_covariance, [batch_size, -1]),
+              tf.zeros([batch_size, 1]))
 # define the inputs to the RNN 
 inputs = (observations, control_inputs)
 # run the RNN
