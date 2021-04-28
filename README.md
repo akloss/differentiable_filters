@@ -42,7 +42,7 @@ This class needs inherit from [contexts.BaseContext](https://github.com/akloss/d
 
 2) Combine the context with the differentiable filtering algorithm you want to use. You can look at the class FilterApplication defined in [example_training_code.run_example.py](https://github.com/akloss/differentiable_filters/blob/main/differentiable_filters/example_training_code/run_example.py) for reference.
 In general, the DFs are implemented as instances of [tf.keras.layers.AbstractRNNCell](https://www.tensorflow.org/api_docs/python/tf/keras/layers/AbstractRNNCell). This means they define how to perform one step of filtering. To apply the DF to a complete sequence, the filter RNN cell has to be wrapped in an RNN layer as you can see in this example
-```
+```python
 # Instantiate a context object
 context = ExampleContext(batch_size, filter_type, loss, hetero_q, hetero_r, learned_process)
 # Instantiate the differentiable filter cell
@@ -52,7 +52,7 @@ rnn_layer = tf.keras.layers.RNN(filter_cell, return_sequences=True, unroll=False
 ```
 
 To run the RNN, we need to provide an initial state for the RNN and the sequence of observations and control inputs. If the belief of the DF is gaussian (as for the EKF), this could look like this
-```
+```python
 # define the initial state consisting of the mean and covariance of the initial belief and a step counter
 init_state = (initial_mean,
               tf.reshape(intial_covariance, [batch_size, -1]),
