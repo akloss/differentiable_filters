@@ -1,5 +1,5 @@
 # differentiable_filters
-TensorFlow code for the paper [How to Train Your Differentiable Filter](https://arxiv.org/abs/2012.14313). 
+TensorFlow code for the paper [How to Train Your Differentiable Filter](https://doi.org/10.1007/s10514-021-09990-9). 
 
 Implements the Extended Kalman filter, the Unscented Kalman filter, a sampling based Unscented Kalman filter and the Particle filter in a differentiable way under [filters](https://github.com/akloss/differentiable_filters/tree/main/differentiable_filters/filters). 
 
