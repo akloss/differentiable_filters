@@ -339,6 +339,7 @@ class KittiDataset():
 
         return out
 
+    @staticmethod
     def _read_images(filename, cam_key):
         """
         Reads in the images from the raw kitti data, creates the difference
@@ -395,8 +396,9 @@ class KittiDataset():
         return ims, ims_m, im_diffs, im_diffs_m
 
 
-    def _get_subsequences(self, ims, im_diffs, xs, ys, thetas, vs, theta_dots,
-                          num, sl):
+    @staticmethod
+    def _get_subsequences(ims, im_diffs, xs, ys, thetas, vs, theta_dots, num,
+                          sl):
         """
         Extracts num sequences of length sl from each file, all starting
         at different timesteps.
