@@ -379,6 +379,9 @@ class KittiDataset():
             i = Image.open(f)
             i = np.asarray(i, 'float32')
             diff = i - p
+            # take care not to cut off the negative part by shifting by the
+            # maximum pixel value (this has a minimal loss)
+            diff = (diff + 255) / 2
             im = cv2.cvtColor(i, cv2.COLOR_RGB2BGR)
             im = cv2.imencode('.png', im)[1].tobytes()
             im_m = cv2.cvtColor(np.fliplr(i), cv2.COLOR_RGB2BGR)
@@ -445,7 +448,8 @@ class KittiDataset():
             out += [vals]
         return out
 
-    def _wrap_angle(self, angle):
+    @staticmethod
+    def _wrap_angle(angle):
         return ((angle - np.pi) % (2 * np.pi)) - np.pi
 
 

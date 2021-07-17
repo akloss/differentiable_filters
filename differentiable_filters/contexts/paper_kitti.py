@@ -831,6 +831,8 @@ class Context(base.PaperBaseContext):
         diff = features['image_diff']
         im = tf.map_fn(self._decode_im, im, fn_output_signature=tf.float32)
         diff = tf.map_fn(self._decode_im, diff, fn_output_signature=tf.float32)
+        # undo the transform we did to avoid loss through the byte encoding
+        diff = diff * 2 - 255.
 
         ims = []
         diffs = []
@@ -930,6 +932,8 @@ class Context(base.PaperBaseContext):
         diff = features['image_diff']
         im = tf.map_fn(self._decode_im, im, fn_output_signature=tf.float32)
         diff = tf.map_fn(self._decode_im, diff, fn_output_signature=tf.float32)
+        # undo the transform we did to avoid loss through the byte encoding
+        diff = diff * 2 - 255.
 
         # if the original sequence is long enough, we use several sub-sequences
         if self.sl == 100:
